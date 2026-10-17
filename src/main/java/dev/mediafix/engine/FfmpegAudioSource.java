@@ -1,6 +1,6 @@
 package dev.mediafix.engine;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 import dev.mediafix.config.FfmpegConfig;
 import dev.mediafix.ffmpeg.FfmpegVideoSource;
 import org.bytedeco.ffmpeg.avcodec.AVCodec;
@@ -163,7 +163,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
             this.ring[i] = new Slot(this.outChannels * OUT_SAMPLES * 2);
         }
         this.packets = new PacketBuffer((long) FfmpegConfig.audioReadAheadMb * 1024L * 1024L);
-        Thread t = new Thread(this::run, "mediafix-ffmpeg-audiodemux");
+        Thread t = new Thread(this::run, "cineduct-ffmpeg-audiodemux");
         t.setDaemon(true);
         this.worker = t;
         t.start();
@@ -181,6 +181,14 @@ public final class FfmpegAudioSource implements AutoCloseable {
 
     public boolean isEnded() {
         return this.ended;
+    }
+
+    /**
+     * 解复用是不是**已经读到流尾**（比 {@link #isEnded()} 早，见视频源里同名方法的说明）。
+     * 上层用它把"流读完了"和"网络卡了"分开 —— 否则片尾会被判成"音频欠载（缓冲耗尽）"。
+     */
+    public boolean inputEnded() {
+        return this.packets != null && this.packets.endOfFile();
     }
 
     public String lastError() {
@@ -307,7 +315,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
         }
         if ((t != null && t.isAlive() && t != Thread.currentThread())
                 || (d != null && d.isAlive() && d != Thread.currentThread())) {
-            MediaFix.LOGGER.warn("[mediafix] 音频解码线程未能在 3 秒内退出，跳过原生资源释放以避免崩溃");
+            CineDuct.LOGGER.warn("[CineDuct] 音频解码线程未能在 3 秒内退出，跳过原生资源释放以避免崩溃");
             return;
         }
         freeNative();
@@ -328,11 +336,11 @@ public final class FfmpegAudioSource implements AutoCloseable {
             }
             this.opened = true;
             AVRational atb = this.fmt.streams(this.aIdx).time_base();
-            MediaFix.LOGGER.info("[mediafix] FFmpeg 音频轨时基={}/{}", atb.num(), atb.den());
+            CineDuct.LOGGER.info("[CineDuct] FFmpeg 音频轨时基={}/{}", atb.num(), atb.den());
             // 源格式与输出格式都要打：杜比全景声是 6ch 源 → 设备只有 2ch 时要下混，这里能一眼看出来
-            MediaFix.LOGGER.info("[mediafix] FFmpeg 音频轨已打开: {} {}ch {}Hz -> 输出 {}ch {}Hz dur={}ms {}",
+            CineDuct.LOGGER.info("[CineDuct] FFmpeg 音频轨已打开: {} {}ch {}Hz -> 输出 {}ch {}Hz dur={}ms {}",
                     this.codecName, this.srcChannels, this.srcSampleRate,
-                    this.outChannels, this.outRate, this.durationMs, MediaFix.LOGGER.url(this.url));
+                    this.outChannels, this.outRate, this.durationMs, CineDuct.LOGGER.url(this.url));
             startDecodeThread();
 
             // 解复用：只读网络、灌预读队列（队列满即阻塞，这就是预读深度的上限）
@@ -362,12 +370,12 @@ public final class FfmpegAudioSource implements AutoCloseable {
         } catch (Throwable t) {
             this.failed = true;
             this.lastError = String.valueOf(t);
-            MediaFix.LOGGER.error("[mediafix] FFmpeg 音频解码线程异常", t);
+            CineDuct.LOGGER.error("[CineDuct] FFmpeg 音频解码线程异常", t);
         }
     }
 
     private void startDecodeThread() {
-        Thread t = new Thread(this::decodeMain, "mediafix-ffmpeg-audiodec");
+        Thread t = new Thread(this::decodeMain, "cineduct-ffmpeg-audiodec");
         t.setDaemon(true);
         this.decodeThread = t;
         t.start();
@@ -427,7 +435,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
         } catch (Throwable t) {
             this.failed = true;
             this.lastError = String.valueOf(t);
-            MediaFix.LOGGER.error("[mediafix] FFmpeg 音频解码线程异常", t);
+            CineDuct.LOGGER.error("[CineDuct] FFmpeg 音频解码线程异常", t);
         }
     }
 
@@ -477,7 +485,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
                 return true;
             }
             if (ptsMs > target + 1000L) {
-                MediaFix.LOGGER.warn("[mediafix] 音频 seek 落点偏后 {}ms（目标 {}ms），接受并让画面跟随",
+                CineDuct.LOGGER.warn("[CineDuct] 音频 seek 落点偏后 {}ms（目标 {}ms），接受并让画面跟随",
                         ptsMs - target, target);
             }
             this.seekTargetMs = -1;
@@ -490,7 +498,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
             long gap = ptsMs - this.lastChunkEndMs;
             if (Math.abs(gap) > 3L && System.currentTimeMillis() - this.lastJumpLogAt > 1000L) {
                 this.lastJumpLogAt = System.currentTimeMillis();
-                MediaFix.LOGGER.warn("[mediafix] 音频块不连续：上一块结束于 {}ms，本块起于 {}ms（差 {}ms）",
+                CineDuct.LOGGER.warn("[CineDuct] 音频块不连续：上一块结束于 {}ms，本块起于 {}ms（差 {}ms）",
                         this.lastChunkEndMs, ptsMs, gap);
             }
         }
@@ -521,7 +529,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
             this.resampleMismatch++;
             if (System.currentTimeMillis() - this.lastMismatchLogAt > 1000L) {
                 this.lastMismatchLogAt = System.currentTimeMillis();
-                MediaFix.LOGGER.warn("[mediafix] 重采样帧数不一致：输入 {} 帧 / 输出 {} 帧（累计 {} 次）",
+                CineDuct.LOGGER.warn("[CineDuct] 重采样帧数不一致：输入 {} 帧 / 输出 {} 帧（累计 {} 次）",
                         inSamples, converted, this.resampleMismatch);
             }
         }
@@ -603,7 +611,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
         this.lastInRate = inRate;
         this.lastInFmt = inFmt;
         this.lastInCh = inCh;
-        MediaFix.LOGGER.info("[mediafix] 音频重采样: {}ch {}Hz fmt={} -> {}ch {}Hz S16",
+        CineDuct.LOGGER.info("[CineDuct] 音频重采样: {}ch {}Hz fmt={} -> {}ch {}Hz S16",
                 inCh, inRate, inFmt, this.outChannels, this.outRate);
     }
 
@@ -628,14 +636,14 @@ public final class FfmpegAudioSource implements AutoCloseable {
                 if (Math.abs(jump) > 20.0) {
                     if (System.currentTimeMillis() - this.lastJumpLogAt > 1000L) {
                         this.lastJumpLogAt = System.currentTimeMillis();
-                        MediaFix.LOGGER.warn("[mediafix] 音频时间戳出现 {}ms 的巨大跳变：忽略该次修正（保持原始时间轴）",
+                        CineDuct.LOGGER.warn("[CineDuct] 音频时间戳出现 {}ms 的巨大跳变：忽略该次修正（保持原始时间轴）",
                                 (long) (jump * 1000));
                     }
                 } else {
                     this.ptsOffsetSec -= jump;
                     if (System.currentTimeMillis() - this.lastJumpLogAt > 1000L) {
                         this.lastJumpLogAt = System.currentTimeMillis();
-                        MediaFix.LOGGER.info("[mediafix] 音频时间戳跳变 {}ms：已按连续时间轴拉平（累计偏移 {}ms）",
+                        CineDuct.LOGGER.info("[CineDuct] 音频时间戳跳变 {}ms：已按连续时间轴拉平（累计偏移 {}ms）",
                                 (long) (jump * 1000), (long) (this.ptsOffsetSec * 1000));
                     }
                 }
@@ -713,7 +721,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
         int ok = avformat_seek_file(this.fmt, -1, minTs, ts, ts, AVSEEK_FLAG_BACKWARD);
         if (ok < 0) ok = av_seek_frame(this.fmt, -1, ts, AVSEEK_FLAG_BACKWARD);
         if (ok < 0) ok = av_seek_frame(this.fmt, -1, ts, 0);
-        MediaFix.LOGGER.info("[mediafix] 音频 seek -> {}ms (result={})", ms, ok);
+        CineDuct.LOGGER.info("[CineDuct] 音频 seek -> {}ms (result={})", ms, ok);
         this.ended = false;
         this.nextPtsSec = ms / 1000.0;
         this.ptsOffsetSec = 0;
@@ -797,7 +805,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
             return this.pkt != null && this.frame != null;
         } catch (Throwable t) {
             this.lastError = String.valueOf(t);
-            MediaFix.LOGGER.error("[mediafix] 打开音频失败", t);
+            CineDuct.LOGGER.error("[CineDuct] 打开音频失败", t);
             return false;
         } finally {
             av_dict_free(opts);
@@ -806,7 +814,7 @@ public final class FfmpegAudioSource implements AutoCloseable {
 
     private void freeNative() {
         if (!FfmpegConfig.freeNativeOnClose) {
-            MediaFix.LOGGER.warn("[mediafix] freeNativeOnClose=false：跳过音频原生资源释放（故意泄漏，供排查）");
+            CineDuct.LOGGER.warn("[CineDuct] freeNativeOnClose=false：跳过音频原生资源释放（故意泄漏，供排查）");
             return;
         }
         if (this.frame != null) {

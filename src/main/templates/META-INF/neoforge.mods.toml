@@ -15,7 +15,7 @@ loaderVersion="${loader_version_range}" #mandatory
 license="${mod_license}"
 
 # A URL to refer people to when problems occur with this mod
-#issueTrackerURL="https://change.me.to.your.issue.tracker.example.invalid/" #optional
+issueTrackerURL="https://github.com/hxwi1/CineDuct-API/issues" #optional
 
 # A list of mods - how many allowed here is determined by the individual mod loader
 [[mods]] #mandatory
@@ -28,6 +28,18 @@ version="${mod_version}" #mandatory
 
 # A display name for the mod
 displayName="${mod_name}" #mandatory
+
+# ★ 客户端必须装，服务端可选。
+#
+# displayTest 决定"能不能进一个没装本模组的服务器"：
+#   MATCH_VERSION（默认）—— 两边必须都装且版本一致，否则拒绝连接（客户端 mod 装了就没法进别人的服）；
+#   IGNORE_SERVER_VERSION —— 服务端可以不装、装了也不校验版本；
+#   IGNORE_ALL_VERSION    —— 两边都不校验（纯客户端模组 / 服务端可选的模组用这个）。
+#
+# 本模组选 IGNORE_ALL_VERSION：客户端装上就能玩（屏幕、独立播放器 API、解析与渲染全在客户端），
+# 服务端装了才多出"屏幕实体 + /cineduct screen 指令"这两件服务端权威的东西；
+# 没装也不影响进服与播放（客户端自己有渲染与音频，屏幕那套只是没有服务端权威状态而已）。
+displayTest="IGNORE_ALL_VERSION" #optional
 
 # A URL to query for updates for this mod. See the JSON update specification https://docs.neoforged.net/docs/misc/updatechecker/
 #updateJSONURL="https://change.me.example.invalid/updates.json" #optional
@@ -46,26 +58,24 @@ displayName="${mod_name}" #mandatory
 
 # The description text for the mod (multi line!) (#mandatory)
 description='''
-纯客户端修复附属（MediaFix v1.1.0），通过 Mixin 注入修复 WaterFrames + Bilibili-Media-Mod
-播放网络视频时的一系列问题，不改动任何原 mod 源码。适合在电影院截图（cinema）场景自用。
+独立视频模组（CineDuct API）：屏幕用实体渲染、指令操控，并对外暴露 dev.mediafix.api 供附属 mod 扩展。
 
-已修复的功能：
-1. 多人播放变黑屏 —— 本地 HTTP 服务器默认开启 Range 206 分片请求，中断后不再整份重传，
-   并扩大线程池、改用随机可用端口，避免固定端口冲突导致的集体黑屏。
-2. 画面串成玩家皮肤贴图 —— 每帧上传视频帧时保存并恢复 GL 纹理绑定状态，
-   不再污染 Minecraft 后续渲染。
-3. 进度自动跳回开头 —— 拦截 Display 的强制 seek：陈旧回 0 / 小误差不再强制纠正，
-   只有真正偏差过大才同步，观感更顺滑。
-4. 全景声（预留开关）—— 强制 VLC 走 Windows WASAPI(mmdevice)，5.1/7.1 等多声道视频
-   按原生声道数直出系统设备，不做立体声下混。
-5. 声音跟随主音量 —— VLC 系统直出的视频音量与 Minecraft 主音量条同步。
+不依赖任何前置 mod —— 不需要 waterframes / watermedia / bilibili_media。
 
-说明：视频仍走原整文件下载后再播放；全景声效果取决于视频音轨声道数与系统设备/播放器。
+安装约定：**客户端必须安装；服务端可选**（displayTest=IGNORE_ALL_VERSION）。
+- 客户端：解析直链、解码、播放、音频输出、渲染全在这里，属必备。
+- 服务端：装了才多出「屏幕实体 + /cineduct screen 指令」这套服务端权威状态；
+  没装也能正常进服游玩 —— 独立播放器 API（dev.mediafix.api.player）本身不需要服务端配合。
+
+播放链路按可用性在「C++ 子进程 + 共享显存零拷贝」与「进程内自研 FFmpeg 引擎」之间自动选择，
+后者作为兜底保证任何机器上都有画面。
+
+源码 / 问题反馈：https://github.com/hxwi1/CineDuct-API
+许可：GPL-3.0-or-later（附带 GPLv3 第 7 节的 API/Mixin 附加许可，见 jar 内 META-INF/LICENSE-EXCEPTION.md）；
+随包分发的 FFmpeg（LGPLv3）、JavaCPP、ZXing 的许可与源码获取方式见 jar 内 META-INF/THIRD_PARTY_NOTICES.md。
 '''
 
-# The [[mixins]] block allows you to declare your mixin config to FML so that it gets loaded.
-[[mixins]]
-config="${mod_id}.mixins.json"
+# 本模组不再通过 Mixin 注入任何前置 mod，因此没有 [[mixins]] 块。
 
 # The [[accessTransformers]] block allows you to declare where your AT file is.
 # If this block is omitted, a fallback attempt will be made to load an AT from META-INF/accesstransformer.cfg
@@ -102,31 +112,23 @@ config="${mod_id}.mixins.json"
     ordering="NONE"
     side="BOTH"
 
-# 本 mod 为纯客户端，仅在客户端侧才真正生效，服务端加载时静默跳过。
-# 目标 mod 均为可选依赖：缺少时本 mod 自动失效而不报错。
+# Sodium：**可选**。装了的话，本模组会把「播放 / 账号登录」设置页挂进 Sodium 的视频设置界面
+# （走 Sodium 0.8.13 提供的公开配置 API，不做任何 mixin —— 见 dev/mediafix/config/sodium/）。
+# 没装 Sodium 时本模组照常工作，只是游戏里没有这一页设置入口。
+#
+# ★ 不要在这里再写 [modproperties.cineduct] 的 "sodium:config_api_user"：
+#   本模组的入口类用的是 @ConfigEntryPointForge 注解，两种声明方式同时用会注册两次，
+#   Sodium 会以 "provided a duplicate mod id" 直接崩游戏。
 [[dependencies.${mod_id}]]
-    modId="bilibili_media"
+    modId="sodium"
     type="optional"
-    ordering="AFTER"
+    versionRange="[0.8.0,)"
+    ordering="NONE"
     side="CLIENT"
 
-[[dependencies.${mod_id}]]
-    modId="watermedia"
-    type="optional"
-    ordering="AFTER"
-    side="CLIENT"
-
-[[dependencies.${mod_id}]]
-    modId="waterframes"
-    type="optional"
-    ordering="AFTER"
-    side="CLIENT"
-
-[[dependencies.${mod_id}]]
-    modId="worldcomment"
-    type="optional"
-    ordering="AFTER"
-    side="CLIENT"
+# 本模组为独立客户端模组：不声明任何前置 mod 依赖，也不与它们冲突。
+# （旧版本曾可选依赖 waterframes/watermedia/bilibili_media/worldcomment，并靠 Mixin 注入；
+#   那条路线已整体移除 —— 屏幕、播放、解析全部自研。服务端加载本模组时静默跳过。）
 
 # Features are specific properties of the game environment, that you may want to declare you require. This example declares
 # that your mod requires GL version 3.2 or higher. Other features will be added. They are side aware so declaring this won't

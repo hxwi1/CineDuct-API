@@ -4,7 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -66,25 +66,25 @@ public final class BiliLive {
             JsonObject root = JsonParser.parseString(resp.body()).getAsJsonObject();
             int code = root.has("code") ? root.get("code").getAsInt() : -1;
             if (code != 0 || !root.has("data") || !root.get("data").isJsonObject()) {
-                MediaFix.LOGGER.warn("[mediafix] 直播接口返回异常 code={}: {}", code,
+                CineDuct.LOGGER.warn("[CineDuct] 直播接口返回异常 code={}: {}", code,
                         resp.body().length() > 300 ? resp.body().substring(0, 300) : resp.body());
                 return null;
             }
             JsonObject data = root.getAsJsonObject("data");
             int liveStatus = intOf(data, "live_status");
             if (liveStatus != 1) {
-                MediaFix.LOGGER.warn("[mediafix] 直播间 {} 当前未开播（live_status={}）", roomId, liveStatus);
+                CineDuct.LOGGER.warn("[CineDuct] 直播间 {} 当前未开播（live_status={}）", roomId, liveStatus);
                 return null;
             }
             if (!data.has("playurl_info") || !data.get("playurl_info").isJsonObject()) {
                 // 付费/加密直播间等会走到这里
-                MediaFix.LOGGER.warn("[mediafix] 直播间 {} 没给出 playurl_info（可能是付费/加密直播）", roomId);
+                CineDuct.LOGGER.warn("[CineDuct] 直播间 {} 没给出 playurl_info（可能是付费/加密直播）", roomId);
                 return null;
             }
             JsonObject playurl = data.getAsJsonObject("playurl_info").getAsJsonObject("playurl");
             JsonArray streams = playurl.getAsJsonArray("stream");
             if (streams == null) {
-                MediaFix.LOGGER.warn("[mediafix] 直播间 {} 的 playurl 里没有 stream[]", roomId);
+                CineDuct.LOGGER.warn("[CineDuct] 直播间 {} 的 playurl 里没有 stream[]", roomId);
                 return null;
             }
             for (JsonElement se : streams) {
@@ -106,16 +106,16 @@ public final class BiliLive {
                         String url = str(info, "host") + str(codec, "base_url") + str(info, "extra");
                         if (url.length() < 20) continue;
                         int qn = intOf(codec, "current_qn");
-                        MediaFix.LOGGER.info("[mediafix] 直播解析: 房间 {} 档位=qn{} 可选={} 直链={}",
-                                roomId, qn, String.valueOf(codec.get("accept_qn")), MediaFix.LOGGER.url(url));
+                        CineDuct.LOGGER.info("[CineDuct] 直播解析: 房间 {} 档位=qn{} 可选={} 直链={}",
+                                roomId, qn, String.valueOf(codec.get("accept_qn")), CineDuct.LOGGER.url(url));
                         return new Stream(roomId, url, qn);
                     }
                 }
             }
-            MediaFix.LOGGER.warn("[mediafix] 直播间 {} 没有 http_stream/flv/avc 组合可用", roomId);
+            CineDuct.LOGGER.warn("[CineDuct] 直播间 {} 没有 http_stream/flv/avc 组合可用", roomId);
             return null;
         } catch (Throwable t) {
-            MediaFix.LOGGER.warn("[mediafix] 直播间 {} 解析失败", roomId, t);
+            CineDuct.LOGGER.warn("[CineDuct] 直播间 {} 解析失败", roomId, t);
             return null;
         }
     }

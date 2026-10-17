@@ -3,7 +3,7 @@ package dev.mediafix.config;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 import net.neoforged.fml.loading.FMLPaths;
 
 import java.nio.charset.StandardCharsets;
@@ -13,7 +13,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 自研引擎（FFmpeg）的参数。配置存于游戏目录 mediafix-ffmpeg.json。
+ * 自研引擎（FFmpeg）的参数。配置存于游戏目录 cineduct-ffmpeg.json。
  *
  * <p><b>没有总开关</b>：引擎是本模组的核心，关掉它就没法播 B 站内容（前置模组的能力已经被
  * DASH 直连取代），所以它常开 —— 只保留这些调优参数。
@@ -29,7 +29,7 @@ public final class FfmpegConfig {
     /** 让 VLC 不解视频轨（追加 :no-video 媒体选项）。 */
     public static boolean disableVlcVideo = true;
 
-    /** 原生库（FFmpeg DLL/so）压缩包路径；空 = 自动在 mods/ 与 config/mediafix/ 下寻找。 */
+    /** 原生库（FFmpeg DLL/so）压缩包路径；空 = 自动在 mods/ 与 config/cineduct/ 下寻找。 */
     public static String nativesPath = "";
 
     /** 是否把 FFmpeg 的详细日志写进游戏日志。 */
@@ -38,7 +38,20 @@ public final class FfmpegConfig {
     /** 音画偏移（毫秒）：正数 = 画面提前。用于两条独立流起播时间不同时的对齐。 */
     public static int avOffsetMs = 0;
 
-    /** 硬件解码（D3D11VA / DXVA2）。4K 软解基本跑不动，默认开；失败会自动退回软解。 */
+    /**
+     * 硬件解码（D3D11VA / DXVA2）的<b>偏好</b>：配置文件与设置界面里保存的是这一个。
+     *
+     * <p>为什么要和 {@link #hwAccel} 分开：驱动不支持硬解时 {@code FfmpegVideoSource}
+     * 会把"本次会话"的 {@link #hwAccel} 置成 false（它不能在每次开播前都重试一遍坏驱动）。
+     * 如果界面直接读写 {@link #hwAccel}，那么一次自动降级就会被当成玩家的选择写进配置文件，
+     * 下次启动也永远软解了。所以：偏好只由玩家改，运行时状态每次启动都从偏好重新开始。
+     */
+    public static boolean hwAccelPreferred = true;
+
+    /**
+     * **本次会话**实际是否走硬件解码：启动时从 {@link #hwAccelPreferred} 取初值，
+     * 硬解初始化失败会被自动置 false（只在本局有效，不会写回配置文件）。
+     */
     public static boolean hwAccel = true;
 
     /** 开播前先缓冲的音频毫秒数：缓够了才开始播，避免一上来就卡。 */
@@ -77,7 +90,48 @@ public final class FfmpegConfig {
      */
     public static boolean freeNativeOnClose = true;
 
-    private static final Path CFG = FMLPaths.GAMEDIR.get().resolve("mediafix-ffmpeg.json");
+    // ---- C++ 子进程播放（零拷贝 + WASAPI）----
+
+    /**
+     * 是否启用 C++ 子进程播放（零拷贝 + WASAPI）。
+     *
+     * <p><b>默认关</b>（2026-10-06 改）：默认播放方式是**进程内 Java 引擎** ——
+     * 它是本模组的主力路径（谁都能跑、不挑显卡驱动、直播还带"开播以来/实时延迟"那套系统时间锚定），
+     * 也是子进程出问题时本来就用的那条兜底路。C++ 子进程（画面经 DXGI 共享纹理零拷贝进 GL、
+     * 音频走 WASAPI）改成**显式开启**：游戏里 {@code /cineduct subprocess on}，
+     * 它会写进本文件，**永久生效**（{@code /cineduct subprocess off} 关回去）。
+     *
+     * <p>开着的时候，任何一步不可用（找不到 exe、驱动不支持 NV_DX_interop、子进程起不来）
+     * 仍然会**自动降级**回进程内引擎，玩家始终有画面。
+     */
+    public static boolean gpuHostEnabled = false;
+
+    /** 子进程输出纹理槽数：越多抗抖动越强，显存也越多（4K 每槽约 33MB，1080p 约 8MB）。 */
+    public static int hostSlots = 3;
+
+    /** cineduct-host.exe 路径；空 = 自动在 &lt;游戏目录&gt;/cineduct-host/ 等处查找。 */
+    public static String hostPath = "";
+
+    // ---- 音频输出形态（子进程声卡直出 / 杜比全景声直通）----
+
+    /**
+     * 音频输出形态：
+     * <ul>
+     *   <li>{@code shared}（**默认**）：共享模式 —— 经过系统混音器，兼容性最好、不独占设备。
+     *       本机实测的结论是："独占/直通"这条路在这类显卡 HDMI 端点上会让 Windows 音频引擎
+     *       （audiokse.dll）崩溃，所以默认不再去试它。详见 docs/AUDIO-passthrough.md。</li>
+     *   <li>{@code auto}：能直通就直通（需要音轨是 Dolby/DTS 码流且端点认那种 IEC 61937 格式），
+     *       否则共享模式。<b>会尝试独占</b>，慎用。</li>
+     *   <li>{@code passthrough}：只走 IEC 61937 码流直通（功放硬件解码全景声）。</li>
+     *   <li>{@code exclusive}：只走独占 PCM（位完美，但会独占整个端点）。</li>
+     * </ul>
+     */
+    public static String audioMode = "shared";
+
+    /** 输出端点选择：空 = 系统默认；"@3" = /cineduct audio 列表里的编号；其它 = 设备名子串。 */
+    public static String audioDevice = "";
+
+    private static final Path CFG = FMLPaths.GAMEDIR.get().resolve("cineduct-ffmpeg.json");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private FfmpegConfig() {
@@ -96,7 +150,7 @@ public final class FfmpegConfig {
                     if (map.get("nativesPath") instanceof String s) nativesPath = s;
                     if (map.get("verbose") instanceof Boolean b) verbose = b;
                     if (map.get("avOffsetMs") instanceof Number n) avOffsetMs = n.intValue();
-                    if (map.get("hwAccel") instanceof Boolean b) hwAccel = b;
+                    if (map.get("hwAccel") instanceof Boolean b) hwAccelPreferred = b;
                     if (map.get("prebufferMs") instanceof Number n) prebufferMs = Math.max(0, n.intValue());
                     if (map.get("audioBufferMs") instanceof Number n) audioBufferMs = Math.max(250, n.intValue());
                     if (map.get("videoReadAheadMb") instanceof Number n) videoReadAheadMb = Math.max(4, n.intValue());
@@ -104,11 +158,18 @@ public final class FfmpegConfig {
         if (map.get("convertThreads") instanceof Number n) convertThreads = Math.max(0, n.intValue());
         if (map.get("videoFrameBufferMb") instanceof Number n) videoFrameBufferMb = Math.max(32, n.intValue());
         if (map.get("freeNativeOnClose") instanceof Boolean b) freeNativeOnClose = b;
+        if (map.get("gpuHostEnabled") instanceof Boolean b) gpuHostEnabled = b;
+        if (map.get("hostSlots") instanceof Number n) hostSlots = Math.max(2, Math.min(8, n.intValue()));
+        if (map.get("hostPath") instanceof String s) hostPath = s;
+        if (map.get("audioMode") instanceof String s) audioMode = s;
+        if (map.get("audioDevice") instanceof String s) audioDevice = s;
                 }
             }
         } catch (Exception e) {
-            MediaFix.LOGGER.warn("[mediafix] 读取 FFmpeg 配置失败", e);
+            CineDuct.LOGGER.warn("[CineDuct] 读取 FFmpeg 配置失败", e);
         }
+        // 运行时状态每次启动都从偏好重新开始（见 hwAccelPreferred 的说明）
+        hwAccel = hwAccelPreferred;
         save();
     }
 
@@ -121,7 +182,7 @@ public final class FfmpegConfig {
             map.put("nativesPath", nativesPath);
             map.put("verbose", verbose);
             map.put("avOffsetMs", avOffsetMs);
-            map.put("hwAccel", hwAccel);
+            map.put("hwAccel", hwAccelPreferred);
             map.put("prebufferMs", prebufferMs);
             map.put("audioBufferMs", audioBufferMs);
             map.put("videoReadAheadMb", videoReadAheadMb);
@@ -129,9 +190,14 @@ public final class FfmpegConfig {
         map.put("convertThreads", convertThreads);
         map.put("videoFrameBufferMb", videoFrameBufferMb);
         map.put("freeNativeOnClose", freeNativeOnClose);
+        map.put("gpuHostEnabled", gpuHostEnabled);
+        map.put("hostSlots", hostSlots);
+        map.put("hostPath", hostPath);
+        map.put("audioMode", audioMode);
+        map.put("audioDevice", audioDevice);
             Files.write(CFG, GSON.toJson(map).getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
-            MediaFix.LOGGER.warn("[mediafix] 保存 FFmpeg 配置失败", e);
+            CineDuct.LOGGER.warn("[CineDuct] 保存 FFmpeg 配置失败", e);
         }
     }
 }

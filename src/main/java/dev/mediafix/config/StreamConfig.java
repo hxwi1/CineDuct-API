@@ -3,7 +3,7 @@ package dev.mediafix.config;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.reflect.TypeToken;
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 import net.neoforged.fml.loading.FMLPaths;
 
 import java.nio.charset.StandardCharsets;
@@ -19,16 +19,16 @@ import java.util.Map;
  * <p>本模组只做流式播放：以前那条"先下载到本地缓存再播"的路径已整条移除
  * （把 B 站视频下载到本地属于灰色地带）。
  *
- * <p>清晰度上限 {@link #maxQn} 可通过 /mediafix-stream quality 调节，
+ * <p>清晰度上限 {@link #maxQn} 可通过 /cineduct-stream quality 调节，
  * 0 = 不限（拿账号授权内最高，如 4K/8K）。
- * <p>配置存于游戏目录 mediafix-stream.json。
+ * <p>配置存于游戏目录 cineduct-stream.json。
  */
 public final class StreamConfig {
     /** true = 优先 DASH(4K/8K/杜比) 流式直连；false = 交回前置模组原生逻辑。 */
     public static boolean highres = true;
     /**
      * 清晰度：-1 = 自动（ABR，按实测网速自适应选档）；
-     * 16=360P 32=480P 64=720P 74=720P60 80=1080P 116=1080P60 120=4K；0=不限（账号内最高）。
+     * 16=360P 32=480P 64=720P 74=720P60 80=1080P 116=1080P60 120=4K 127=8K；0=不限（账号内最高）。
      */
     public static int maxQn = -1;   // 默认：自动（按网速自适应）
 
@@ -68,6 +68,16 @@ public final class StreamConfig {
     public static int catchUpMaxMs = 8000;
 
     /**
+     * "原地 seek"容差（毫秒）：目标与当前进度之差小于该值的 seek 直接忽略。
+     *
+     * <p>对网络流来说，seek 的代价极高 —— 重开两条 CDN 连接、清空约 2.5 秒音频缓冲、
+     * 必然进一次 BUFFERING；而"回到当前位置"这种 seek 画面和声音完全没变化。
+     * （以前这个值挂在 cineduct-seekguard.json 上，那份配置是给 waterframes 的进度 bug
+     * 打补丁用的；现在前置 mod 去掉了，它作为引擎自己的参数搬到这里。）
+     */
+    public static int noopSeekToleranceMs = 1500;
+
+    /**
      * 音频轨偏好。
      * <ul>
      *   <li>{@code dolby}（默认）：优先杜比全景声(30250, E-AC-3/ec-3)，其次 Hi-Res 无损(30251, FLAC)，
@@ -79,7 +89,7 @@ public final class StreamConfig {
      */
     public static String audioPreference = "dolby";
 
-    private static final Path CFG = FMLPaths.GAMEDIR.get().resolve("mediafix-stream.json");
+    private static final Path CFG = FMLPaths.GAMEDIR.get().resolve("cineduct-stream.json");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private StreamConfig() {
@@ -99,10 +109,11 @@ public final class StreamConfig {
                     if (map.get("streamOffsetMs") instanceof Number n) streamOffsetMs = n.intValue();
                     if (map.get("audioPreference") instanceof String s) audioPreference = s;
                     if (map.get("catchUpMaxMs") instanceof Number n) catchUpMaxMs = n.intValue();
+                    if (map.get("noopSeekToleranceMs") instanceof Number n) noopSeekToleranceMs = Math.max(0, n.intValue());
                 }
             }
         } catch (Exception e) {
-            MediaFix.LOGGER.warn("[mediafix] 读取流式播放配置失败", e);
+            CineDuct.LOGGER.warn("[CineDuct] 读取流式播放配置失败", e);
         }
         save();
     }
@@ -117,9 +128,10 @@ public final class StreamConfig {
             map.put("streamOffsetMs", streamOffsetMs);
             map.put("audioPreference", audioPreference);
             map.put("catchUpMaxMs", catchUpMaxMs);
+            map.put("noopSeekToleranceMs", noopSeekToleranceMs);
             Files.write(CFG, GSON.toJson(map).getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
-            MediaFix.LOGGER.warn("[mediafix] 保存流式播放配置失败", e);
+            CineDuct.LOGGER.warn("[CineDuct] 保存流式播放配置失败", e);
         }
     }
 }

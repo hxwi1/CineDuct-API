@@ -1,21 +1,16 @@
 package dev.mediafix.render;
 
-import org.watermedia.api.render.RenderAPI;
-
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 信箱化(黑边)帧上传：把视频帧居中拷入一块与屏幕格比例等比的黑色画布，
- * 再交给 RenderAPI 上传——画面比例永远正确、黑边为真实黑色像素、零拉伸。
+ * 信箱化(黑边)帧上传：把视频帧居中拷入一块与**屏幕自身比例**等比的黑色画布，再上传 ——
+ * 画面比例永远正确、黑边为真实黑色像素、零拉伸。
  *
- * <p>画布缓冲按尺寸缓存复用；黑边只在分配/视频分辨率变化时重涂一次，
- * 常态每帧仅一次行拷贝。目标比例由 {@link LetterboxState} 提供
- * （DisplayAspectMixin 在 Display.preRender 每帧写入）。
- *
- * <p>本类必须是普通类（不能放在 mixin 包里做内部类——mixin 包内的类
- * 不允许被注入后的代码直接引用，会 IllegalClassLoadError）。
+ * <p>画布缓冲按尺寸缓存复用；黑边只在分配/视频分辨率变化时重涂一次，常态每帧仅一次行拷贝。
+ * 目标比例由调用方显式传入（屏幕实体自己的宽高比）—— 以前是 waterframes 的 Display 每帧
+ * 通过 Mixin 写进一个全局状态，前置 mod 去掉后改成参数传递，反而更清楚。
  */
 public final class Letterbox {
 
@@ -31,29 +26,13 @@ public final class Letterbox {
     }
 
     /**
-     * 信箱化上传入口（VideoPlayerMixin 的 uploadBuffer 重定向转发到这里）。
-     * 比例已一致（误差 1% 内）或拿不到屏幕比例时原样透传。
-     */
-    public static void upload(ByteBuffer data, int texId, int format,
-                              int w, int h, boolean full) {
-        Canvas c = prepare(data, w, h);
-        if (c == null) {
-            RenderAPI.uploadBuffer(data, texId, format, w, h, full);
-            return;
-        }
-        boolean needFull = full || c.paintedNow;
-        RenderAPI.uploadBuffer(c.buf, texId, format, c.w, c.h, needFull);
-    }
-
-    /**
-     * 信箱化准备（两种播放路径共用）：
-     * 把视频帧居中拷进一块"与屏幕格等比"的黑色画布，返回画布；不需要处理时返回 null（原样上传）。
+     * 信箱化准备（唯一的帧处理入口）：
+     * 把视频帧居中拷进一块"与屏幕比例等比"的黑色画布，返回画布；不需要处理时返回 null（原样上传）。
      *
-     * <p>自研引擎的上传路径（GlSafeUpload）也走这里，否则引擎接管后画面会被拉伸 ——
-     * 信箱化是绑在 watermedia 的 RenderAPI 上传点上的，换上传实现就会丢掉。
+     * @param targetAspect 屏幕实体自身的宽高比（宽/高）；&lt;=0.05 或非有限值表示不处理
      */
-    public static Canvas prepare(ByteBuffer data, int w, int h) {
-        float aspect = LetterboxState.aspect();
+    public static Canvas prepare(ByteBuffer data, int w, int h, float targetAspect) {
+        float aspect = targetAspect;
         if (aspect <= 0.05f || !Float.isFinite(aspect) || w <= 0 || h <= 0
                 || w > MAX_SIDE || h > MAX_SIDE) {
             return null;
@@ -72,6 +51,15 @@ public final class Letterbox {
             ch = h;
             cw = Math.max(w, Math.round(h * aspect));
         }
+        /*
+         * 画布尺寸对齐到偶数。
+         *
+         * 为什么：视频解码器/子进程那边对偶数尺寸更友好（NV12 是 2x2 子采样，奇数尺寸要额外处理），
+         * 而且**零拷贝那条路（子进程的 --fit-aspect）本来就对齐到偶数** —— 两边算出来的框尺寸不一致时，
+         * 同一个显示面在两条传输方式下会差 1 像素（实测 708 vs 709）。这里对齐一下，两条路完全一致。
+         */
+        cw = Math.max(2, cw & ~1);
+        ch = Math.max(2, ch & ~1);
         if (cw > MAX_SIDE || ch > MAX_SIDE || (long) cw * ch > MAX_CANVAS_PIXELS) {
             return null;
         }

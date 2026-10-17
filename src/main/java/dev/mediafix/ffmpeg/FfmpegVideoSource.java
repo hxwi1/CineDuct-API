@@ -1,6 +1,6 @@
 package dev.mediafix.ffmpeg;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 import dev.mediafix.config.FfmpegConfig;
 import dev.mediafix.engine.PacketBuffer;
 import org.bytedeco.ffmpeg.avcodec.AVCodec;
@@ -218,14 +218,14 @@ public final class FfmpegVideoSource implements AutoCloseable {
     public void start() {
         // 预读预算：缓的是压缩码流，不是解码后的帧（4K 一帧 33MB，缓不了几十秒）
         this.packets = new PacketBuffer((long) FfmpegConfig.videoReadAheadMb * 1024L * 1024L);
-        Thread t = new Thread(this::run, "mediafix-ffmpeg-demux");
+        Thread t = new Thread(this::run, "cineduct-ffmpeg-demux");
         t.setDaemon(true);
         this.worker = t;
         t.start();
     }
 
     private void startDecodeThread() {
-        Thread t = new Thread(this::decodeMain, "mediafix-ffmpeg-decode");
+        Thread t = new Thread(this::decodeMain, "cineduct-ffmpeg-decode");
         t.setDaemon(true);
         this.decodeThread = t;
         t.start();
@@ -241,6 +241,17 @@ public final class FfmpegVideoSource implements AutoCloseable {
 
     public boolean isEnded() {
         return this.ended;
+    }
+
+    /**
+     * 解复用是不是**已经读到流尾**。
+     *
+     * <p>比 {@link #isEnded()} 早得多：`isEnded()` 要等解码线程把重排序窗口排空才算数，
+     * 而片尾那一刻预读就见底了。上层用它把"流读完了"和"网络卡了"分开 ——
+     * 分不开的话，片尾会被当成卡顿（引擎那边 8 秒的 starvedAtEnd 兜底就是在给这个擦屁股）。
+     */
+    public boolean inputEnded() {
+        return this.packets != null && this.packets.endOfFile();
     }
 
     public String lastError() {
@@ -497,7 +508,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
             if ("帧环空".equals(reason)) this.nullEmpty++;
             else this.nullFuture++;
         }
-        MediaFix.LOGGER.diag("[mediafix][取帧] 空({}) 时钟={}ms 环内={}帧 槽位={} 取={} 还={} pts=[{}..{}] 解出={} 已显示={} 丢帧={} 等时钟={} 回收={} 预读={}KB 空/未到点={}/{}",
+        CineDuct.LOGGER.diag("[CineDuct][取帧] 空({}) 时钟={}ms 环内={}帧 槽位={} 取={} 还={} pts=[{}..{}] 解出={} 已显示={} 丢帧={} 等时钟={} 回收={} 预读={}KB 空/未到点={}/{}",
                 reason, clockMs, queuedFrames(), slotBreakdown(),
                 this.framesPresented, this.framesReleased,
                 minPts == Long.MAX_VALUE ? "-" : minPts,
@@ -555,7 +566,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
         /*
          * ★ seek 之后的"过渡期"必须放过去：这段时间视频和声卡的落点天然不同步。
          *
-         * 实测（mediafix-2026-09-24_11-04-30.log）：
+         * 实测（cineduct-2026-09-24_11-04-30.log）：
          *   11:06:32.678 waterframes 要求对齐到 87650ms（我们因缓冲落后了 21 秒）
          *   11:06:32.692 视频/音频都发起 seek，视频缓冲见底，要等网络
          *   11:06:36.457 自愈判定"视频超前时钟 21322ms"，把视频 seek 回 66303ms ← 服务端的对齐被撤销
@@ -573,7 +584,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
             this.desyncSince = now;                    // 不累计，等音频把时钟挪过去
             if (now - this.lastSettleLogAt > 1000L) {
                 this.lastSettleLogAt = now;
-                MediaFix.LOGGER.info("[mediafix] seek 过渡期：视频已在目标 {}ms，等音频时钟跟上（当前时钟 {}ms）",
+                CineDuct.LOGGER.info("[CineDuct] seek 过渡期：视频已在目标 {}ms，等音频时钟跟上（当前时钟 {}ms）",
                         this.lastRequestedSeekMs, clockMs);
             }
             return;
@@ -584,7 +595,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
 
         this.lastDesyncSeekAt = now;
         this.desyncSign = 0;
-        MediaFix.LOGGER.warn("[mediafix] 视频与时钟持续脱节 {}ms 达 3 秒：按时钟 {}ms 重新对齐（自愈）",
+        CineDuct.LOGGER.warn("[CineDuct] 视频与时钟持续脱节 {}ms 达 3 秒：按时钟 {}ms 重新对齐（自愈）",
                 amount, clockMs);
         requestSeek(clockMs);
     }
@@ -651,13 +662,13 @@ public final class FfmpegVideoSource implements AutoCloseable {
             }
         }
         if ((t != null && t.isAlive()) || (d != null && d.isAlive())) {
-            MediaFix.LOGGER.warn("[mediafix] 视频线程未能在 3 秒内退出，跳过原生资源释放以避免崩溃");
+            CineDuct.LOGGER.warn("[CineDuct] 视频线程未能在 3 秒内退出，跳过原生资源释放以避免崩溃");
             return;
         }
         if (t != null && t.isAlive() && t != Thread.currentThread()) {
             // 解码线程还活着：此时释放原生上下文就是 use-after-free。
             // 宁可泄漏这几 MB（进程退出时由系统回收），也不能崩游戏。
-            MediaFix.LOGGER.warn("[mediafix] 视频解码线程未能在 3 秒内退出，跳过原生资源释放以避免崩溃");
+            CineDuct.LOGGER.warn("[CineDuct] 视频解码线程未能在 3 秒内退出，跳过原生资源释放以避免崩溃");
             return;
         }
         freeNative();
@@ -671,18 +682,18 @@ public final class FfmpegVideoSource implements AutoCloseable {
         try {
             if (!open()) {
                 this.failed = true;
-                MediaFix.LOGGER.error("[mediafix] FFmpeg 视频源打开失败: {} ({})", this.lastError, this.url);
+                CineDuct.LOGGER.error("[CineDuct] FFmpeg 视频源打开失败: {} ({})", this.lastError, this.url);
                 return;
             }
             this.opened = true;
             AVStream vs0 = this.fmt.streams(this.vIdx);
             AVRational tb = vs0.time_base();
             AVRational fr = vs0.avg_frame_rate().den() == 0 ? vs0.r_frame_rate() : vs0.avg_frame_rate();
-            MediaFix.LOGGER.info("[mediafix] FFmpeg 已打开视频轨: {}x{} {}ms 时基={}/{} 帧率={}/{} ({}fps) {}",
+            CineDuct.LOGGER.info("[CineDuct] FFmpeg 已打开视频轨: {}x{} {}ms 时基={}/{} 帧率={}/{} ({}fps) {}",
                     this.width, this.height, this.durationMs,
                     tb.num(), tb.den(), fr.num(), fr.den(),
                     fr.den() == 0 ? "?" : String.format("%.3f", fr.num() / (double) fr.den()),
-                    MediaFix.LOGGER.url(this.url));
+                    CineDuct.LOGGER.url(this.url));
             startDecodeThread();
 
             // 解复用线程：只负责从网络读取并把压缩包灌进预读队列（队列满即阻塞 = 预读深度上限）。
@@ -733,7 +744,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
         } catch (Throwable t) {
             this.failed = true;
             this.lastError = String.valueOf(t);
-            MediaFix.LOGGER.error("[mediafix] FFmpeg 解码线程异常", t);
+            CineDuct.LOGGER.error("[CineDuct] FFmpeg 解码线程异常", t);
         } finally {
             // 原生资源统一由 close() 释放：那里的 join 保证本线程已退出
             synchronized (this.lock) {
@@ -794,7 +805,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
         } catch (Throwable t) {
             this.failed = true;
             this.lastError = String.valueOf(t);
-            MediaFix.LOGGER.error("[mediafix] FFmpeg 视频解码线程异常", t);
+            CineDuct.LOGGER.error("[CineDuct] FFmpeg 视频解码线程异常", t);
         }
     }
 
@@ -837,7 +848,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
                 return true;
             }
             this.skipBeforeMs = -1L;
-            MediaFix.LOGGER.info("[mediafix] 视频快进完成：丢弃 {} 帧，落到 {}ms（目标 {}ms）",
+            CineDuct.LOGGER.info("[CineDuct] 视频快进完成：丢弃 {} 帧，落到 {}ms（目标 {}ms）",
                     this.framesSkipped, framePts, skipTo);
         }
 
@@ -865,7 +876,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
             this.tTransferNs += System.nanoTime() - tTr;
             if (trRet < 0) {
                 if (++this.hwTransferFails >= 30) {
-                    MediaFix.LOGGER.error("[mediafix] GPU 取帧连续失败 {} 次，回退软件解码", this.hwTransferFails);
+                    CineDuct.LOGGER.error("[CineDuct] GPU 取帧连续失败 {} 次，回退软件解码", this.hwTransferFails);
                     mediafix$dropHw();
                 }
                 return true;
@@ -897,7 +908,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
             }
             // 落点偏后只记录、不重试（重试会形成"再调 performSeek → 计数器归零"的死循环）
             if (fpts > target + 1000L) {
-                MediaFix.LOGGER.warn("[mediafix] 视频 seek 落点偏后 {}ms（目标 {}ms），接受并交给引擎对齐",
+                CineDuct.LOGGER.warn("[CineDuct] 视频 seek 落点偏后 {}ms（目标 {}ms），接受并交给引擎对齐",
                         fpts - target, target);
             }
             this.seekTargetMs = -1;
@@ -982,7 +993,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
                 Object r = tasks[i].get();
                 if (r instanceof Integer v && v > 0) rows += v;
             } catch (Throwable t) {
-                MediaFix.LOGGER.warn("[mediafix] 分带转换失败: {}", String.valueOf(t));
+                CineDuct.LOGGER.warn("[CineDuct] 分带转换失败: {}", String.valueOf(t));
                 return -1;
             }
         }
@@ -1087,7 +1098,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
         // 记下目标，后续把早于目标的解码帧丢掉，直到真正追上目标为止。
         this.seekTargetMs = ms;
         this.seekDropped = 0;
-        MediaFix.LOGGER.info("[mediafix] 视频 seek -> {}ms (result={}, 丢弃前导帧上限900)", ms, ok);
+        CineDuct.LOGGER.info("[CineDuct] 视频 seek -> {}ms (result={}, 丢弃前导帧上限900)", ms, ok);
     }
 
     // =====================================================================
@@ -1175,7 +1186,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
                 return false;
             }
             String codecName = codec.name() == null ? "?" : codec.name().getString();
-            MediaFix.LOGGER.info("[mediafix] 视频解码器: {} {}x{} 硬件解码={}",
+            CineDuct.LOGGER.info("[CineDuct] 视频解码器: {} {}x{} 硬件解码={}",
                     codecName, this.dec.width(), this.dec.height(),
                     this.hwDevice != null ? "开" : "关(软解)");
 
@@ -1189,7 +1200,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
             return this.pkt != null && this.frame != null;
         } catch (Throwable t) {
             this.lastError = String.valueOf(t);
-            MediaFix.LOGGER.error("[mediafix] FFmpeg 打开失败", t);
+            CineDuct.LOGGER.error("[CineDuct] FFmpeg 打开失败", t);
             return false;
         } finally {
             av_dict_free(opts);
@@ -1222,7 +1233,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
                         && (cfg.methods() & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) {
                     this.hwDevice = ref;
                     this.hwPixFmt = cfg.pix_fmt();
-                    MediaFix.LOGGER.info("[mediafix] 硬件解码可用: type={} pixFmt={}",
+                    CineDuct.LOGGER.info("[CineDuct] 硬件解码可用: type={} pixFmt={}",
                             type == AV_HWDEVICE_TYPE_D3D11VA ? "d3d11va" : "dxva2", this.hwPixFmt);
                     return;
                 }
@@ -1232,7 +1243,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
             } catch (Throwable ignored) {
             }
         }
-        MediaFix.LOGGER.info("[mediafix] 未找到可用的硬件解码设备，使用软件解码");
+        CineDuct.LOGGER.info("[CineDuct] 未找到可用的硬件解码设备，使用软件解码");
     }
 
     /** 放弃硬件解码：释放设备、清掉绑定，后续帧走软解。 */
@@ -1265,7 +1276,7 @@ public final class FfmpegVideoSource implements AutoCloseable {
             for (int i = 0; i < wanted; i++) this.ring[i] = new Slot();
             this.ringBytes = bytes;
         }
-        MediaFix.LOGGER.info("[mediafix] 解码帧缓冲: {} 帧（{}MB 预算，每帧 {}MB ≈ {}ms 余量）",
+        CineDuct.LOGGER.info("[CineDuct] 解码帧缓冲: {} 帧（{}MB 预算，每帧 {}MB ≈ {}ms 余量）",
                 wanted, FfmpegConfig.videoFrameBufferMb, bytes / 1048576L, wanted * 1000L / 24);
     }
 
@@ -1303,12 +1314,12 @@ public final class FfmpegVideoSource implements AutoCloseable {
         if (this.convertPool == null) {
             this.convertPool = java.util.concurrent.Executors.newFixedThreadPool(
                     Math.max(1, count), r -> {
-                        Thread t = new Thread(r, "mediafix-ffmpeg-convert");
+                        Thread t = new Thread(r, "cineduct-ffmpeg-convert");
                         t.setDaemon(true);
                         return t;
                     });
         }
-        MediaFix.LOGGER.info("[mediafix] 分带转换: {} 条带 x {}行（源格式={} 平面={}）", count, band, srcFmt, this.bandPlanes);
+        CineDuct.LOGGER.info("[CineDuct] 分带转换: {} 条带 x {}行（源格式={} 平面={}）", count, band, srcFmt, this.bandPlanes);
     }
 
     private void freeBands() {
@@ -1332,14 +1343,14 @@ public final class FfmpegVideoSource implements AutoCloseable {
         this.swsFmt = srcFmt;
         if (this.sws == null) {
             this.lastError = "sws_getContext 失败";
-            MediaFix.LOGGER.error("[mediafix] sws_getContext 失败: {}x{} fmt={}", w, h, srcFmt);
+            CineDuct.LOGGER.error("[CineDuct] sws_getContext 失败: {}x{} fmt={}", w, h, srcFmt);
         }
     }
 
     private void freeNative() {
         if (!FfmpegConfig.freeNativeOnClose) {
             // 诊断开关：只泄漏不释放。用来判断崩溃是否来自原生释放路径。
-            MediaFix.LOGGER.warn("[mediafix] freeNativeOnClose=false：跳过视频原生资源释放（故意泄漏，供排查）");
+            CineDuct.LOGGER.warn("[CineDuct] freeNativeOnClose=false：跳过视频原生资源释放（故意泄漏，供排查）");
             return;
         }
         if (this.swFrame != null) {

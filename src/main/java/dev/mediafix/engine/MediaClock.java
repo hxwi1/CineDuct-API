@@ -1,6 +1,6 @@
 package dev.mediafix.engine;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 
 /**
  * 播放主时钟。自研，替代 VLC 的时间轴。
@@ -151,7 +151,7 @@ public final class MediaClock {
         // ---- 第 4 层：离群剔除 ----
         if (Math.abs(residual) > OUTLIER) {
             if (++this.outlierStreak < OUTLIER_STREAK) {
-                logRateLimited("[mediafix] 时钟收到一次异常测量（偏差 {}ms）：先不采信，等后续确认",
+                logRateLimited("[CineDuct] 时钟收到一次异常测量（偏差 {}ms）：先不采信，等后续确认",
                         residual * 1000.0);
                 return;   // 时钟不动：单次异常绝不许拽走时间轴
             }
@@ -163,7 +163,7 @@ public final class MediaClock {
             this.speed = 1.0;
             this.smoothedResidualMs = 0.0;
             this.outlierStreak = 0;
-            logRateLimited("[mediafix] 时钟硬重同步（连续 {} 次测量一致）：{}ms -> {}ms",
+            logRateLimited("[CineDuct] 时钟硬重同步（连续 {} 次测量一致）：{}ms -> {}ms",
                     OUTLIER_STREAK, before * 1000.0, ptsSec * 1000.0);
             return;
         }
@@ -205,21 +205,21 @@ public final class MediaClock {
         long now = System.currentTimeMillis();
         if (now - this.lastLogAt < 1000L) return;
         this.lastLogAt = now;
-        MediaFix.LOGGER.warn(fmt, a);
+        CineDuct.LOGGER.warn(fmt, a);
     }
 
     private void logRateLimited(String fmt, double a, double b) {
         long now = System.currentTimeMillis();
         if (now - this.lastLogAt < 1000L) return;
         this.lastLogAt = now;
-        MediaFix.LOGGER.warn(fmt, a, b);
+        CineDuct.LOGGER.warn(fmt, a, b);
     }
 
     private void logRateLimited(String fmt, int a, double b, double c) {
         long now = System.currentTimeMillis();
         if (now - this.lastLogAt < 1000L) return;
         this.lastLogAt = now;
-        MediaFix.LOGGER.warn(fmt, a, b, c);
+        CineDuct.LOGGER.warn(fmt, a, b, c);
     }
 
     /** 变速（预留：目前播放器只跑 1.0x）。 */

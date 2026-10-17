@@ -4,17 +4,18 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 import dev.mediafix.abr.AbrController;
 import dev.mediafix.abr.AbrLadder;
 import dev.mediafix.config.FfmpegConfig;
 import dev.mediafix.config.StreamConfig;
 import dev.mediafix.ffmpeg.FfmpegRuntime;
 import dev.mediafix.bili.BiliAuth;
+import dev.mediafix.bili.BiliEntitlements;
 import dev.mediafix.bili.BiliLive;
 import dev.mediafix.bili.BiliUrls;
+import dev.mediafix.api.ResolvedStream;
 import dev.mediafix.ui.Notice;
-import org.watermedia.api.network.patchs.AbstractPatch;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -27,7 +28,8 @@ import java.util.TreeMap;
 /**
  * 高清(DASH)缓存播放：用 wbi 签名请求 DASH playurl，从返回的 dash.video / dash.audio
  * 中挑登录账号授权内、配置上限（{@link dev.mediafix.config.StreamConfig#maxQn}）内
- * 最高清晰度（4K/8K/HDR/杜比），音视频两条链直接交给自研引擎边下边播
+ * 最高清晰度（4K/8K/杜比；**HDR 被硬编码排除**，见 {@link #isHdrVideo}），
+ * 音视频两条链直接交给自研引擎边下边播
  * （BiliBiliMediaFiles），再以 9095 本地服务器 URL 交给播放器
  * （音频轨由 BasePlayerDiagMixin 的 input-slave 音频桥挂给 VLC）。
  *
@@ -67,7 +69,7 @@ public final class DashResolver {
     /** 最近一次解析的原始页面 URI（直链过期后据此重新解析）。 */
     private static volatile URI lastResolvedUri;
 
-    /** 最近一次选中的音频轨摘要，供 /mediafix audio 展示（编码/声道/码率）。 */
+    /** 最近一次选中的音频轨摘要，供 /cineduct audio 展示（编码/声道/码率）。 */
     private static volatile String lastAudioSummary = "尚未解析";
 
     public static String lastAudioSummary() {
@@ -77,7 +79,7 @@ public final class DashResolver {
     /** 重新解析时是否保持当前档位（true = 只换 URL，不重置 ABR 档位）。 */
     private static volatile boolean refreshingSession;
 
-    public static AbstractPatch.Result resolve(URI uri) {
+    public static ResolvedStream resolve(URI uri) {
         lastResolvedUri = uri;
         try {
             URI longUri = BiliUrls.expandShortLink(uri);
@@ -108,7 +110,7 @@ public final class DashResolver {
             // 注意：dolby / flac 在 dash 里面（data.dash.dolby），不是 data 的直接子节点
             return finishResolve(data, data.getAsJsonObject("dash"));
         } catch (Throwable t) {
-            MediaFix.LOGGER.warn("[mediafix] DASH 解析失败，回退 durl", t);
+            CineDuct.LOGGER.warn("[CineDuct] DASH 解析失败，回退 durl", t);
             Notice.message("DASH 解析异常，回退原生播放: " + t.getMessage());
             return null;
         }
@@ -125,24 +127,21 @@ public final class DashResolver {
      * 直播流的时间戳是服务器侧的固定偏移且与系统时间 1:1 同步，
      * 于是"原始 PTS + 锚点"就能换算出实时延迟，断流重连也能无缝接上。
      */
-    private static AbstractPatch.Result resolveLive(long roomId) {
+    private static ResolvedStream resolveLive(long roomId) {
         BiliLive.Stream stream = BiliLive.resolve(roomId);
         if (stream == null) {
-            // 未开播 / 付费直播 / 接口异常：交回前置模组，由它按自己的方式处理
-            Notice.message("B站直播解析失败（未开播或需要权限），回退原生播放");
+            // 未开播 / 付费直播 / 接口异常
+            Notice.message("B站直播解析失败（未开播或需要权限）");
             return null;
         }
-        // 直播标记必须同时进"线程内交接棒"和"按主 URI 的全局表"：
-        // 解析在 ImageFetch 线程、引擎在播放器线程创建，只存线程内会丢。
-        DashHandoff.set(stream.url(), stream.url(), true);
-        MediaFix.LOGGER.info("[mediafix] B站直播流式直连: 房间 {} qn={}（音视频同一条流，时间轴用系统时间锚定）",
+        CineDuct.LOGGER.info("[CineDuct] B站直播流式直连: 房间 {} qn={}（音视频同一条流，时间轴用系统时间锚定）",
                 roomId, stream.qn());
         if (!refreshingSession) {
             Notice.message("B站直播流式播放: 房间 " + roomId);
         }
-        AbstractPatch.Result result = new AbstractPatch.Result(URI.create(stream.url()), true, false);
-        result.audioUrl = URI.create(stream.url());
-        return result;
+        // 直播的音视频复用同一根时间轴（FLV 里 aac + h264）：两条链都指向它，
+        // 引擎本来就允许两链同源，音频源会自己去挑音轨。
+        return ResolvedStream.live(URI.create(stream.url()), "直播间 " + roomId);
     }
 
     /**
@@ -161,7 +160,7 @@ public final class DashResolver {
             HttpResponse<String> resp = client.send(builder.GET().build(), HttpResponse.BodyHandlers.ofString());
             JsonObject root = JsonParser.parseString(resp.body()).getAsJsonObject();
             if (root.get("code").getAsInt() != 0) {
-                MediaFix.LOGGER.warn("[mediafix] view 接口返回 code={}", root.get("code").getAsInt());
+                CineDuct.LOGGER.warn("[CineDuct] view 接口返回 code={}", root.get("code").getAsInt());
                 return null;
             }
             JsonObject data = root.getAsJsonObject("data");
@@ -173,10 +172,10 @@ public final class DashResolver {
             } else {
                 cid = data.get("cid").getAsLong();
             }
-            MediaFix.LOGGER.info("[mediafix] 解析 {} 第{}P -> cid={}", bvid, page, cid);
+            CineDuct.LOGGER.info("[CineDuct] 解析 {} 第{}P -> cid={}", bvid, page, cid);
             return cid;
         } catch (Throwable t) {
-            MediaFix.LOGGER.warn("[mediafix] 获取 cid 失败: {}", bvid, t);
+            CineDuct.LOGGER.warn("[CineDuct] 获取 cid 失败: {}", bvid, t);
             return null;
         }
     }
@@ -207,12 +206,12 @@ public final class DashResolver {
      * （结构与普通视频一致：dash.video / dash.audio / dolby），带登录 Cookie 换取
      * 会员清晰度与杜比。仅返回试看(未登录/无权限)或 DRM 内容时回退原生逻辑。
      */
-    private static AbstractPatch.Result resolveBangumi(long epId) throws Exception {
+    private static ResolvedStream resolveBangumi(long epId) throws Exception {
         JsonObject result = null;
         try {
             result = requestPgc(epId);
         } catch (Exception e) {
-            MediaFix.LOGGER.warn("[mediafix] 番剧 playurl 请求失败 ep={}", epId, e);
+            CineDuct.LOGGER.warn("[CineDuct] 番剧 playurl 请求失败 ep={}", epId, e);
         }
         if (result == null) {
             return null; // 已在 requestPgc 里给玩家提示
@@ -225,11 +224,11 @@ public final class DashResolver {
                 ? result.getAsJsonObject("dash") : null;
         if (dash == null) {
             Notice.message("番剧未返回DASH流(试看/无权限)，回退原生播放");
-            MediaFix.LOGGER.warn("[mediafix] 番剧无DASH流 ep={} quality={} preview={}",
+            CineDuct.LOGGER.warn("[CineDuct] 番剧无DASH流 ep={} quality={} preview={}",
                     epId, intOf(result, "quality"), intOf(result, "is_preview"));
             return null;
         }
-        MediaFix.LOGGER.info("[mediafix] 番剧DASH解析: ep={} quality={} preview={}",
+        CineDuct.LOGGER.info("[CineDuct] 番剧DASH解析: ep={} quality={} preview={}",
                 epId, intOf(result, "quality"), intOf(result, "is_preview"));
         return finishResolve(result, dash);
     }
@@ -250,13 +249,13 @@ public final class DashResolver {
             JsonObject result = root.getAsJsonObject("result");
             if (intOf(result, "is_preview") == 1) {
                 Notice.message("番剧仅可试看(登录态/大会员校验未过)，回退原生播放");
-                MediaFix.LOGGER.warn("[mediafix] 番剧返回试看流 ep={} has_paid={}",
+                CineDuct.LOGGER.warn("[CineDuct] 番剧返回试看流 ep={} has_paid={}",
                         epId, intOf(result, "has_paid"));
                 return null;
             }
             return result;
         }
-        MediaFix.LOGGER.warn("[mediafix] 番剧 playurl 返回异常 code={}: {}",
+        CineDuct.LOGGER.warn("[CineDuct] 番剧 playurl 返回异常 code={}: {}",
                 root.has("code") ? root.get("code").getAsInt() : -1,
                 resp.body().length() > 300 ? resp.body().substring(0, 300) : resp.body());
         return null;
@@ -273,7 +272,7 @@ public final class DashResolver {
      * @param data  playurl 的 data（pgc 接口传 result）
      * @param dashObj DASH 对象（dash.video / dash.audio / dash.dolby / dash.flac）
      */
-    private static AbstractPatch.Result finishResolve(JsonObject data, JsonObject dashObj) throws Exception {
+    private static ResolvedStream finishResolve(JsonObject data, JsonObject dashObj) throws Exception {
         JsonElement videoEl = pickBest(dashObj == null ? null : dashObj.getAsJsonArray("video"));
         AudioPick pick = pickAudioTrack(data, dashObj);
         JsonObject audio = pick == null ? null : pick.obj();
@@ -289,7 +288,7 @@ public final class DashResolver {
 
         String videoCodec = str(video, "codecs");
         int qualityId = intOf(video, "id");
-        MediaFix.LOGGER.info("[mediafix] 选中视频流: qn={}({}) {}x{} {}kbps codec={}",
+        CineDuct.LOGGER.info("[CineDuct] 选中视频流: qn={}({}) {}x{} {}kbps codec={}",
                 qualityId, describeQn(qualityId), intOf(video, "width"), intOf(video, "height"),
                 longOf(video, "bandwidth") / 1000, videoCodec);
         String videoUrl = firstUrl(video);
@@ -302,7 +301,7 @@ public final class DashResolver {
         // 音频【永远取最高音质】：优先杜比全景声块，否则 dash.audio 里码率最高的一条。
         // 它不属于 ABR —— 清晰度自适应只作用于视频链，音频不参与换挡。
         if (audioUrl != null) {
-            MediaFix.LOGGER.info("[mediafix] 音频链: {} {}kbps (id={}{})",
+            CineDuct.LOGGER.info("[CineDuct] 音频链: {} {}kbps (id={}{})",
                     pick == null ? "普通音轨" : pick.label(),
                     audioBandwidth(audio) / 1000, intOf(audio, "id"),
                     audioCodec.isEmpty() ? "" : ", " + audioCodec);
@@ -317,7 +316,7 @@ public final class DashResolver {
             if (audioArr != null && audioArr.size() > 0 && audioArr.get(0).isJsonObject()) {
                 firstAudioKeys = String.valueOf(audioArr.get(0).getAsJsonObject().keySet());
             }
-            MediaFix.LOGGER.warn("[mediafix] 未找到独立音频轨: dash.audio={}条 首条音轨键={} dash键={}",
+            CineDuct.LOGGER.warn("[CineDuct] 未找到独立音频轨: dash.audio={}条 首条音轨键={} dash键={}",
                     audioArr == null ? "缺失" : String.valueOf(audioArr.size()),
                     firstAudioKeys, dashObj.keySet());
         }
@@ -326,26 +325,22 @@ public final class DashResolver {
         // 视频交给 FFmpeg 解、音频交给自研引擎，两边各自边下边播。
         // 要求：开关打开 + FFmpeg 已启用且原生库可用 + 音频链存在。
         if (StreamConfig.dashStreaming && audioUrl != null && FfmpegRuntime.available()) {
-            DashHandoff.set(videoUrl, audioUrl);
-            MediaFix.LOGGER.info("[mediafix] DASH 流式直连: 音视频均交自研引擎 (qn={}, {})",
+            CineDuct.LOGGER.info("[CineDuct] DASH 流式直连: 音视频两条链各自边下边播 (qn={}, {})",
                     qualityId, describeQn(qualityId));
             if (!refreshingSession) Notice.message("DASH 流式直连(不下载): " + describeQn(qualityId));
-            // 主 URI 给音频链（VLC 侧只当参考）；video 链由 DashHandoff 的全局表按主 URI 反查。
-            // result.audioUrl 也填上，这样 watermedia 缓存命中时仍然能拿到两条链。
-            AbstractPatch.Result result = new AbstractPatch.Result(URI.create(audioUrl), true, false);
-            result.audioUrl = URI.create(audioUrl);
-            return result;
+            return new ResolvedStream(URI.create(videoUrl), URI.create(audioUrl), false, null,
+                    describeQn(qualityId), -1L);
         }
 
         /*
-         * 走到这里说明流式直连不可用：要么 /mediafix-stream streaming 关着，
+         * 走到这里说明流式直连不可用：要么 /cineduct-stream streaming 关着，
          * 要么 FFmpeg 引擎/原生库不可用，要么这条视频没有独立音频链。
          *
          * 以前这里会退到"先下载到本地缓存再播"，那条路径已整条移除 ——
          * 把 B 站视频下载到本地属于灰色地带，本模组只做流式播放。
-         * 所以这里直接交回给前置模组，按它自己的方式处理。
+         * 所以这里返回 null，由调用方（BiliSourceResolver）回退成"当直链试一把"。
          */
-        MediaFix.LOGGER.warn("[mediafix] DASH 流式直连不可用（开关={} 原生库={} 有音频链={}），交回前置模组",
+        CineDuct.LOGGER.warn("[CineDuct] DASH 流式直连不可用（开关={} 原生库={} 有音频链={}），无法解析",
                 StreamConfig.dashStreaming, FfmpegRuntime.available(), audioUrl != null);
         return null;
     }
@@ -355,7 +350,7 @@ public final class DashResolver {
         JsonObject data = tryRequestDash(bvid, cid);
         if (data == null) {
             // wbi key 每日更替，跨天缓存的 key 会失效：刷新后重试一次
-            MediaFix.LOGGER.info("[mediafix] playurl 请求失败，刷新 wbi key 后重试");
+            CineDuct.LOGGER.info("[CineDuct] playurl 请求失败，刷新 wbi key 后重试");
             mixinKey = null;
             data = tryRequestDash(bvid, cid);
         }
@@ -393,7 +388,7 @@ public final class DashResolver {
             return root.getAsJsonObject("data");
         }
         // -412 / v_voucher = wbi 签名被风控拒绝（key 过期等）
-        MediaFix.LOGGER.warn("[mediafix] playurl 返回异常 code={}: {}", root.get("code").getAsInt(),
+        CineDuct.LOGGER.warn("[CineDuct] playurl 返回异常 code={}: {}", root.get("code").getAsInt(),
                 resp.body().length() > 500 ? resp.body().substring(0, 500) : resp.body());
         return null;
     }
@@ -422,7 +417,7 @@ public final class DashResolver {
             }
             return firstUrl(el.getAsJsonObject());
         } catch (Exception e) {
-            MediaFix.LOGGER.warn("[mediafix] 重解析直链失败 bvid={} cid={}", bvid, cid, e);
+            CineDuct.LOGGER.warn("[CineDuct] 重解析直链失败 bvid={} cid={}", bvid, cid, e);
             return null;
         }
     }
@@ -489,18 +484,18 @@ public final class DashResolver {
         if (orig == null) return null;
         try {
             refreshingSession = true;
-            AbstractPatch.Result result = resolve(orig);
-            String video = DashHandoff.lastVideoUrl();
-            String audio = result != null && result.audioUrl != null ? result.audioUrl.toString() : null;
+            ResolvedStream result = resolve(orig);
+            String video = result != null && result.video() != null ? result.video().toString() : null;
+            String audio = result != null && result.audio() != null ? result.audio().toString() : null;
             if (video == null || audio == null) {
-                MediaFix.LOGGER.warn("[mediafix] 直链续期：重新解析没拿到两条链（video={} audio={}）",
+                CineDuct.LOGGER.warn("[CineDuct] 直链续期：重新解析没拿到两条链（video={} audio={}）",
                         video != null, audio != null);
                 return null;
             }
-            MediaFix.LOGGER.info("[mediafix] 直链续期：已拿到新鲜的两条链");
+            CineDuct.LOGGER.info("[CineDuct] 直链续期：已拿到新鲜的两条链");
             return new String[]{video, audio};
         } catch (Throwable t) {
-            MediaFix.LOGGER.warn("[mediafix] 直链续期失败", t);
+            CineDuct.LOGGER.warn("[CineDuct] 直链续期失败", t);
             return null;
         } finally {
             refreshingSession = false;
@@ -530,7 +525,7 @@ public final class DashResolver {
         String imgKey = baseName(wbi.get("img_url").getAsString());
         String subKey = baseName(wbi.get("sub_url").getAsString());
         mixinKey = mixinKey(imgKey, subKey);
-        MediaFix.LOGGER.debug("[mediafix] wbi mixinKey 已缓存");
+        CineDuct.LOGGER.debug("[CineDuct] wbi mixinKey 已缓存");
         return mixinKey;
     }
 
@@ -565,7 +560,7 @@ public final class DashResolver {
     /**
      * 从 dash.video 里挑一条流。
      *
-     * <p>{@code StreamConfig.maxQn == -1}（即 /mediafix-stream quality auto）时走 <b>ABR</b>：
+     * <p>{@code StreamConfig.maxQn == -1}（即 /cineduct-stream quality auto）时走 <b>ABR</b>：
      * 把数组里所有清晰度收成阶梯存进 {@link AbrLadder}，并按"保守起步"的原则选初始档
      * （有历史测速就按 带宽×0.7 挑，没有就从中档起步）—— 之后由 {@link AbrController}
      * 依据实测带宽与缓冲水位升降档。
@@ -575,17 +570,48 @@ public final class DashResolver {
         if (videos == null || videos.size() == 0) {
             return null;
         }
-        if (StreamConfig.maxQn < 0) {
-            return pickAuto(videos);
+        /*
+         * ★ 唯一的选流入口：先**硬编码剔掉 HDR/杜比视界**，下面两条路径（手动档位 / ABR）都吃这份结果。
+         *
+         * <p>为什么做成硬编码而不是配置项：HDR 不是"画质更高"那么简单的开关 —— 它要求整条
+         * 色彩链路（真实色彩空间声明 → 驱动/CPU 色调映射 → 输出 BT.709）都对，任何一环错位
+         * 的表现都是"画面发灰、高光压死"，而这类问题只能靠专业播放器逐帧比对去查。
+         * 作者明确不处理 HDR，所以直接**永不主动选**它：宁可少一档清晰度，也不要这条链路。
+         *
+         * <p>只有在整条视频**只提供 HDR** 时才不得不退回选它（并明确打日志）：那种情况下
+         * "什么都不放"比"放一条 HDR"更糟，画面由子进程已有的色调映射兜着。
+         */
+        JsonArray sdr = withoutHdr(videos);
+        final boolean hdrOnly = sdr.size() == 0;
+        if (hdrOnly) {
+            CineDuct.LOGGER.warn("[CineDuct] 这条视频只提供 HDR/杜比视界流（共 {} 条），"
+                    + "没有可用的 SDR 档位：已退回选它（本模组不处理 HDR，画面靠子进程的色调映射兜着；"
+                    + "想彻底避开请换片源）", videos.size());
+        } else if (sdr.size() < videos.size()) {
+            CineDuct.LOGGER.info("[CineDuct] 已排除 {} 条 HDR/杜比视界流（本模组硬编码不拉 HDR），"
+                    + "候选 {} → {} 档", videos.size() - sdr.size(), videos.size(), sdr.size());
         }
-        int cap = StreamConfig.maxQn > 0 ? StreamConfig.maxQn : 127; // 0 = 不限
+        final JsonArray usable = hdrOnly ? videos : sdr;
+        if (StreamConfig.maxQn < 0) {
+            return pickAuto(usable);
+        }
+        /*
+         * 账号权限夹紧：配置里可能存着超出当前账号的档位（大会员设了 4K 之后退出登录），
+         * 也可能被手改过 —— 这里再夹一次，别去要一条账号根本拿不到的流。
+         * 0（不限）按"账号内最高"理解，同样夹到权限上限。
+         */
+        int configured = StreamConfig.maxQn > 0 ? StreamConfig.maxQn : 0;
+        int cap = BiliEntitlements.clampQn(configured);
+        if (configured > 0 && cap < configured) {
+            CineDuct.LOGGER.info("[CineDuct] 账号权限限制：清晰度上限 qn{} → qn{}（不会请求越权档位）",
+                    configured, cap);
+        }
         JsonElement best = null;
         int bestId = -1;
         int bestRank = Integer.MAX_VALUE;
-        for (JsonElement e : videos) {
+        for (JsonElement e : usable) {
             if (!e.isJsonObject()) continue;
             JsonObject o = e.getAsJsonObject();
-            if (isDolbyVision(o)) continue; // 不要杜比视界视频数据
             int id = intOf(o, "id");
             if (id > cap) continue; // 超过用户设定的清晰度上限
             int rank = codecRank(o);
@@ -594,6 +620,22 @@ public final class DashResolver {
                 bestId = id;
                 bestRank = rank;
                 best = e;
+            }
+        }
+        /*
+         * 显式选了 8K 就把"代价"说清楚。
+         *
+         * <p>B 站的 8K（qn=127）基本只有 AV1 一种编码，而 {@code avoidAv1} 默认是开的
+         * （因为多数显卡没有 AV1 硬解）。但挑选规则是**清晰度优先**，所以显式指定 8K 时
+         * 那条 AV1 流照样会被选中 —— 这是调用方的明确选择，不该被静默降级；
+         * 只是把风险打在日志里：没有 AV1 硬解就会退回软解，8K 软解跑不动。
+         */
+        if (best != null && best.isJsonObject()) {
+            JsonObject chosen = best.getAsJsonObject();
+            if (bestId == 127 && isAv1(chosen) && StreamConfig.avoidAv1) {
+                CineDuct.LOGGER.warn("[CineDuct] 8K 只有 AV1 一种编码，已按你选的清晰度选中它："
+                        + "需要显卡 AV1 硬解（RTX 40/50、Arc 等），没有的话会退回软解，8K 软解跑不动"
+                        + "（想避免就选 4k，或把 cineduct-stream.json 的 avoidAv1 保持默认）");
             }
         }
         return best;
@@ -613,7 +655,6 @@ public final class DashResolver {
         for (JsonElement e : videos) {
             if (!e.isJsonObject()) continue;
             JsonObject o = e.getAsJsonObject();
-            if (isDolbyVision(o)) continue;
             String url = firstUrl(o);
             if (url == null) continue;
             int id = intOf(o, "id");
@@ -625,13 +666,26 @@ public final class DashResolver {
             rankByQn.put(id, rank);
             byQn.put(id, o);
         }
+        int droppedForPermission = 0;
         for (var en : byQn.entrySet()) {
+            /*
+             * 账号权限夹紧：超出权限的档位不能进阶梯。
+             * 否则 ABR 自动升档时会去换一条账号拿不到的 url —— 表现为换档失败/反复重连。
+             */
+            if (en.getKey() > BiliEntitlements.maxQnCap()) {
+                droppedForPermission++;
+                continue;
+            }
             JsonObject o = en.getValue();
             String url = firstUrl(o);
             int w = intOf(o, "width");
             int h = intOf(o, "height");
             list.add(new AbrLadder.Candidate(en.getKey(), longOf(o, "bandwidth"), url,
                     describeQn(en.getKey()) + "(" + codecShort(o) + ")", w, h));
+        }
+        if (droppedForPermission > 0) {
+            CineDuct.LOGGER.info("[CineDuct] 账号权限限制：ABR 阶梯裁掉 {} 个越权档位（上限 qn{}）",
+                    droppedForPermission, BiliEntitlements.maxQnCap());
         }
         if (list.isEmpty()) return null;
         list.sort(java.util.Comparator.comparingLong(AbrLadder.Candidate::bandwidthBps));
@@ -655,7 +709,7 @@ public final class DashResolver {
         }
         AbrLadder.Candidate chosen = list.get(start);
         AbrLadder.set(list, start);
-        MediaFix.LOGGER.info("[mediafix] ABR 模式：{} 档可选 {}，起步 {}（{}kbps {}）{}",
+        CineDuct.LOGGER.info("[CineDuct] ABR 模式：{} 档可选 {}，起步 {}（{}kbps {}）{}",
                 list.size(),
                 list.stream().map(AbrLadder.Candidate::label).collect(java.util.stream.Collectors.joining("/")),
                 chosen.label(), chosen.bandwidthBps() / 1000, chosen.resolution(),
@@ -663,7 +717,7 @@ public final class DashResolver {
         // 顺手点出"标称 4K 但分辨率不到 2160p"的假 4K，免得又靠肉眼看
         for (AbrLadder.Candidate c : list) {
             if (c.qn() >= 120 && c.height() > 0 && c.height() < 2000) {
-                MediaFix.LOGGER.warn("[mediafix] 注意：这条流标称 {} 但真实分辨率只有 {}（假 4K）",
+                CineDuct.LOGGER.warn("[CineDuct] 注意：这条流标称 {} 但真实分辨率只有 {}（假 4K）",
                         c.label(), c.resolution());
             }
         }
@@ -710,6 +764,43 @@ public final class DashResolver {
         }
         String codec = str(o, "codecs").toLowerCase();
         return codec.startsWith("dvh") || codec.contains("dolby_v");
+    }
+
+    /**
+     * 判断是否为 HDR 系视频流（HDR10/HLG 的 qn=125，或杜比视界）。
+     *
+     * <p>★ 本模组的**硬编码策略**：HDR 与杜比视界一律不主动拉（见 {@link #pickBest} 的 ★ 说明）。
+     * B 站给 HDR 的标记就是清晰度 id=125（杜比视界是 126），没有别的字段可判断；
+     * 这里再兜一层 codec 名（{@code dvh}/{@code dolby_v}、{@code hdr}），防止接口改字段。
+     */
+    private static boolean isHdrVideo(JsonObject o) {
+        if (intOf(o, "id") == 125) {
+            return true;
+        }
+        if (isDolbyVision(o)) {
+            return true;
+        }
+        String codec = str(o, "codecs").toLowerCase();
+        return codec.contains("hdr") || codec.startsWith("hlg");
+    }
+
+    /**
+     * 剔掉 HDR/杜比视界的那几条流。
+     *
+     * <p>返回值**可能是空数组**（这条视频只有 HDR）—— 调用方必须处理这种情况：
+     * 空不等于"没得播"，只等于"没有 SDR 档位"（见 {@link #pickBest}）。
+     */
+    private static JsonArray withoutHdr(JsonArray videos) {
+        JsonArray out = new JsonArray();
+        if (videos == null) {
+            return out;
+        }
+        for (JsonElement e : videos) {
+            if (!e.isJsonObject()) continue;
+            if (isHdrVideo(e.getAsJsonObject())) continue;
+            out.add(e);
+        }
+        return out;
     }
 
     /** 选中的音频轨：对象 + 来源类别。 */
@@ -778,8 +869,9 @@ public final class DashResolver {
         JsonArray flac = specialAudio(data, dash, "flac");
         JsonArray normal = dash == null ? null : dash.getAsJsonArray("audio");
 
-        String pref = StreamConfig.audioPreference == null ? "dolby"
-                : StreamConfig.audioPreference.trim().toLowerCase(java.util.Locale.ROOT);
+        // 账号权限夹紧：杜比全景声 / Hi-Res 无损只有大会员能拿，非大会员一律按普通音轨处理
+        // （只放宽到"普通音轨里码率最高的一条"，不会因为偏好写成 dolby 就去请求越权音轨）
+        String pref = BiliEntitlements.clampAudioPreference(StreamConfig.audioPreference);
         String[] order = switch (pref) {
             case "best" -> new String[]{"normal", "dolby", "flac"};
             case "hires" -> new String[]{"flac", "dolby", "normal"};
@@ -799,7 +891,7 @@ public final class DashResolver {
                 break;
             }
         }
-        MediaFix.LOGGER.info("[mediafix] 音频块: 杜比={} Hi-Res={} 普通={}条 | 偏好={} → {}",
+        CineDuct.LOGGER.info("[CineDuct] 音频块: 杜比={} Hi-Res={} 普通={}条 | 偏好={} → {}",
                 specialState(data, dash, "dolby"), specialState(data, dash, "flac"),
                 normal == null ? 0 : normal.size(), pref,
                 pick == null ? "无可用音轨" : pick.label());

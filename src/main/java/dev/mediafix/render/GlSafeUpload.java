@@ -14,9 +14,8 @@ import java.nio.ByteBuffer;
  * 改成 MC 自己的状态缓存（{@code GlStateManager._bindTexture/_pixelStore}）后零查询；
  * 因为缓存被同步成了真实状态，上传结束后不需要再恢复。
  *
- * <p><b>信箱化</b>：这里也走 {@link Letterbox#prepare}，与 watermedia 的 VLC 路径共用同一套
- * 画布缓存。防拉伸原本只挂在 watermedia 的 RenderAPI 上传点上，自研引擎接管后换成了本类，
- * 如果不显式接过来，画面就会被拉伸 —— 这正是接手时漏掉的那一步。
+ * <p><b>信箱化</b>：这里走 {@link Letterbox#prepare}，按屏幕实体自己的宽高比加黑边，
+ * 非 16:9 的屏幕上画面不被拉伸。
  */
 public final class GlSafeUpload {
 
@@ -30,24 +29,25 @@ public final class GlSafeUpload {
 
     /** 视频帧上传入口（引擎路径）。 */
     public static void uploadFrame(ByteBuffer rgba, int textureId, int width, int height) {
-        uploadFrame(rgba, textureId, width, height, false);
+        uploadFrame(rgba, textureId, width, height, false, 0f);
     }
 
     /**
      * 视频帧上传入口（引擎路径）。
      *
-     * <p><b>{@code forceAllocate} 必须由"每个播放器实例"决定，不能只靠下面的静态记录。</b>
-     * 原因：{@code VideoPlayer.release()} 会 {@code deleteTexture}，而 GL 会把同一个 id
-     * 回收给下一个播放器 —— 此时静态记录里"这个 id 已经分配过 3840x2160"，于是我们只调
-     * {@code glTexSubImage2D}，写入一块根本没有存储的纹理：**画面全黑、声音正常**
-     * （多次换视频/刷新后才出现，正是 id 被回收且尺寸恰好相同的时候）。
-     * 调用方（{@code VideoPlayerFfmpegMixin}）跟踪自己这个播放器实例的纹理 id，
-     * 一旦发现换过纹理就要求重新分配 —— watermedia 内部也是每个播放器一个 first 标志。
+     * <p><b>{@code forceAllocate} 必须由"每个屏幕实例"决定，不能只靠下面的静态记录。</b>
+     * 原因：屏幕被重建/销毁时 GL 会把纹理 id 回收给下一块屏幕 —— 此时静态记录里
+     * "这个 id 已经分配过 3840x2160"，于是我们只调 {@code glTexSubImage2D}，写入一块根本没有
+     * 存储的纹理：**画面全黑、声音正常**。调用方跟踪自己这块屏幕的纹理 id，
+     * 一旦发现换过纹理就要求重新分配。
+     *
+     * @param targetAspect 屏幕实体宽高比（用于信箱化）；&lt;=0 表示不加黑边
      */
-    public static void uploadFrame(ByteBuffer rgba, int textureId, int width, int height, boolean forceAllocate) {
+    public static void uploadFrame(ByteBuffer rgba, int textureId, int width, int height,
+                                   boolean forceAllocate, float targetAspect) {
         if (rgba == null || textureId <= 0 || width <= 0 || height <= 0) return;
 
-        Letterbox.Canvas canvas = Letterbox.prepare(rgba, width, height);
+        Letterbox.Canvas canvas = Letterbox.prepare(rgba, width, height, targetAspect);
         ByteBuffer data = canvas == null ? rgba : canvas.buf;
         int uw = canvas == null ? width : canvas.w;
         int uh = canvas == null ? height : canvas.h;

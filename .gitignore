@@ -40,3 +40,14 @@ run/
 **/src/generated/**/.cache/
 repo/
 !**/src/**/repo/
+
+### 本地临时文件 / 构建产物（不进版本库）###
+# 注意：下面这些规则都带前导 /，只匹配仓库根目录。
+# 不加前导 / 的 dev/ 会把 src/main/java/dev/ 整个忽略掉（踩过一次）。
+/sodium-src/
+/logs/
+/logs2/
+/dev/
+/libs/
+/native/build/
+/native/testdata/

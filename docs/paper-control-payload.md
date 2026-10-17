@@ -1,0 +1,156 @@
+# 服务端（Paper 插件）控制客户端播放：自定义网络包契约
+
+> 状态：**接口已定稿，待实现**。本文只定义线上格式与语义，不定义实现；实现分两轮（先 Java，再 Java 侧 NeoForge 注册与处理，见 §9）。
+> 目标场景：**服务端是 Paper**，用插件直接控制装了本模组的客户端播放。
+
+---
+
+## 1. 结论与一条硬约束
+
+通道名：**`cineduct:control`**（下行，服务端 → 客户端），载荷是 **UTF-8 JSON 文本**。
+另留一个可选上行通道 **`cineduct:state`**（客户端 → 服务端），供插件做面板/日志。
+
+**硬约束：Paper 上不存在本模组的服务端部分。**
+本模组的结构是"客户端必须、服务端可选"，而服务端那半是 **NeoForge** 的（屏幕实体 `cineduct:screen`、服务端权威进度、`/cineduct screen ...` 指令都在那一侧）。Paper 不加载 NeoForge mod，所以在 Paper 服务器上：
+
+- 没有屏幕实体 → 客户端世界里**不会**有由服务端创建的屏幕；
+- 没有服务端指令 → `/cineduct screen create ...` 那条路走不通；
+- 唯一可被服务端控制的播放对象是 **客户端本地播放器**（`dev.mediafix.api.player.CinePlayer`），见 `src/main/java/dev/mediafix/api/player/CinePlayer.java:38`。
+
+因此本通道的能力上限是"**让客户端本地开一条播放、并控制它**"，画面画在哪里是 §8 的未定项。
+
+---
+
+## 2. 通道与注册
+
+| 通道 | 方向 | 用途 |
+| --- | --- | --- |
+| `cineduct:control` | 服务端 → 客户端 | 控制指令（下面所有 op） |
+| `cineduct:state` | 客户端 → 服务端 | 状态回执（可选实现；插件不订阅也照常工作） |
+
+客户端侧注册入口（NeoForge 21.1，已确认这两个类存在于 `neoforge-21.1.231-universal.jar`）：
+
+- `net/neoforged/neoforge/network/event/RegisterPayloadHandlersEvent`
+- `net/neoforged/neoforge/network/registration/PayloadRegistrar`
+
+要点：
+- 载荷体就是"整段 JSON 的 UTF-8 字节"，不需要二进制结构对齐（这也是选 JSON 的原因：Paper 侧用 Gson 拼字符串即可，不需要共享结构体定义）。
+- **通道必须先由客户端注册并通告**，否则 Paper 发的包会被丢弃。插件侧发之前用 `player.getListeningPluginChannels()` 判断有没有 `cineduct:control`：没有 = 模组没装或版本低于本特性，直接跳过（不要报错刷屏）。
+
+---
+
+## 3. 报文格式
+
+```json
+{ "v": 1, "op": "open", "slot": "main", "url": "https://www.bilibili.com/video/BV1xx411c7mD",
+  "volume": 80, "loop": true, "muted": false, "positionMs": 0, "aspect": 1.7778 }
+```
+
+| 字段 | 类型 | 必需 | 说明 |
+| --- | --- | --- | --- |
+| `v` | int | 是 | 协议版本；当前 **1**。客户端收到不认识的版本要**整包忽略并回一条错误**（回显 `v`），不猜 |
+| `op` | string | 是 | 操作名，见 §4 |
+| `slot` | string | 视 op | 服务端自定义的槽位名（1~32 字符，`[A-Za-z0-9_.-]`）。**服务端决定槽位，客户端维护 slot → 播放器映射**，这样插件不需要知道客户端的内部 id |
+| 其它 | — | 视 op | 见 §4 |
+
+通用规则：
+- **未知 op / 未知字段**：忽略未知字段（向前兼容）；未知 op 回错误，不崩。
+- **幂等**：同一 `(slot, op)` 重复下发必须等价（重连后插件可以无脑重放）。
+- 单条报文建议 **< 8KB**；本协议只传控制指令与 URL，不放媒体数据。
+
+---
+
+## 4. 操作表
+
+每个 op 都对应 `CinePlayer` 上**已存在**的方法，不新增客户端内部能力。
+
+| op | 额外字段 | 语义 | 对应实现 |
+| --- | --- | --- | --- |
+| `open` | `url`（必需）、`volume`、`loop`、`muted`、`positionMs`、`aspect` | 在该 slot 上开一条本地播放；slot 已存在则先 `close` 再开（等价"换源"） | `CinePlayerApi.open`（`src/main/java/dev/mediafix/api/player/CinePlayerApi.java:56`）+ `PlayerOptions` |
+| `close` | — | 关闭该 slot；不存在则无操作 | `CinePlayer.close`（`CinePlayer.java:224`） |
+| `pause` | `paused`（bool） | 暂停/继续 | `CinePlayer.pause`（`CinePlayer.java:164`） |
+| `seek` | `positionMs` | 跳转（直播忽略） | `CinePlayer.seek`（`CinePlayer.java:170`） |
+| `volume` | `percent`（0~100） | 设音量 | `CinePlayer.setVolumePercent`（`CinePlayer.java:173`） |
+| `mute` | `muted`（bool） | 静音开关 | `CinePlayer.setMuted`（`CinePlayer.java:177`） |
+| `repeat` | `repeat`（bool） | 循环 | `CinePlayer.setRepeat`（`CinePlayer.java:182`） |
+| `aspect` | `aspect`（float，`<=0` 关） | 显示面比例（信箱化由模组烘焙进纹理） | `CinePlayer.setDisplayAspect`（`CinePlayer.java:157`） |
+| `rebuild` | — | 重建该 slot 的播放（卡住/断流时用） | `CinePlayer.rebuild`（`CinePlayer.java:216`） |
+| `sync` | `slots[]` | **幂等对齐**：把客户端状态收敛到给定 slot 集合（多余的服务端 slot 关闭），适合玩家重连/插件重载后一次下发 | 上述方法的组合 |
+| `list` | — | 请求回执（走 `cineduct:state`）；无状态副作用 | 读 `CinePlayer` 状态方法 |
+
+---
+
+## 5. 安全闸门（必须实现，默认全关）
+
+一个客户端会连很多服务器；这个通道等于把"播放控制"交给了服务器。默认策略：
+
+| 闸门 | 默认 | 说明 |
+| --- | --- | --- |
+| 启用开关 | **关** | `cineduct-packet.json` 里 `enabled: true` 才接受任何包 |
+| 服务器白名单 | 空（= 全拒） | 按服务器地址（`host:port`）或服务器品牌+地址前缀匹配 |
+| 共享令牌 | 空 | 报文可带 `token`，与配置里的值比对（给"租服/公开服但只有自己插件能控"用） |
+| 域名白名单 | 仅 `bilibili.com` / `b23.tv` / `bilivideo.com` | `open` 的 `url` 只允许这些 host，防"恶意服让客户端去拉任意地址" |
+| 频率上限 | 20 条/秒/客户端 | 超了丢弃并回一条 `rate_limited` |
+| 生命周期 | 退服/换服即清 | 见 §7 |
+
+闸门判定顺序：`enabled` → 地址白名单 → 令牌 → op 白名单（可配置禁用 `open`）→ URL 白名单 → 频率。
+
+---
+
+## 6. 上行回执（可选）
+
+`cineduct:state`，同样是 UTF-8 JSON，客户端在以下时机发一条：`open` 成功后、状态发生跳变（如 `LOADING→PLAYING`）、错误、`list` 请求、以及每 **2 秒**的心跳（仅当有 slot 活着）。
+
+```json
+{ "v": 1, "seq": 12, "ack": 7, "slots": [
+  { "slot": "main", "state": "PLAYING", "positionMs": 12345, "durationMs": 240000,
+    "live": false, "buffering": false, "transport": "dxgi-interop",
+    "volume": 80, "muted": false, "err": "" } ],
+  "err": "" }
+```
+
+- `ack` = 最近一条成功处理的 `cineduct:control` 的序号（服务端若在报文里带 `seq`，客户端原样回显；不带则 `ack` 为 -1）。
+- `state` 取值集合同 `PlaybackState`（`src/main/java/dev/mediafix/api/PlaybackState.java:5`）。
+- 插件侧要读这个通道，需要用 Bukkit 的 `Messenger` 注册 `cineduct:state` 的入站监听；不注册也不影响下行。
+
+---
+
+## 7. 生命周期（谁负责收拾）
+
+| 事件 | 客户端动作 |
+| --- | --- |
+| 收到 `open`（slot 已存在） | 先关旧播放器再开新的（顺序：close → open，避免两条链同时出声） |
+| `sync` 里没有的 server slot | 关闭 |
+| **断开与服务器的连接 / 换服 / 退出世界** | **关闭所有由服务端创建的 slot**（不能出现"已经退服了还在放"） |
+| 模组更新/重载 | 同上，全清 |
+
+"由服务端创建"= 收到过 `cineduct:control` 开出来的 slot；客户端自己（玩家/附属 mod）开的播放器**不受影响**。
+
+---
+
+## 8. 未定项：画面谁来画
+
+`CinePlayer` 只负责"给出一张能采样的纹理"，**必须有人每帧来画**（`CinePlayer.acquireDrawTexture`，`CinePlayer.java:116`）。Paper 侧控制台没有这个能力，所以要选一个渲染目标：
+
+| 选项 | 说明 | 代价 |
+| --- | --- | --- |
+| **A. 附属客户端 mod 自绘** | 本通道只做控制，渲染交给订阅方（API 已够用） | 需要另写一个客户端 mod |
+| **B. 模组内置"本地屏幕/HUD"** | 新增一个纯客户端的显示目标（如固定在屏幕某个位置的全屏层/画中画），由 `slot` 决定位置 | 是本协议之外的新功能，工作量最大但"开箱可用" |
+| **C. 只做音频/只做状态** | 不画，只放声音或只回执状态 | 不满足"看到画面" |
+
+**建议**：先做 A + 留好 B 的接口位（`slot` 里编码显示位置，如 `hud:pip:bottom-right`），等你确定要"服务器一发包客户端就出画面"时再实现 B。
+
+---
+
+## 9. 实施顺序
+
+1. **本文定稿**（当前这一步）。
+2. **客户端注册与处理（Java）**：`RegisterPayloadHandlersEvent` 里注册 `cineduct:control`（`playToClient`）与 `cineduct:state`（`playToServer`）；`slot → CinePlayer` 映射表；闸门与限流；退服清理。
+3. **Paper 侧参考实现**：一个最小插件（`sendPluginMessage` + 通道可用性检查 + 令牌），作为文档附录，不进本模组产物。
+4. **渲染目标**：按 §8 选定后单独排期。
+
+---
+
+## 10. 与子进程 UUID 的关系
+
+两者正交，但有一处交汇：`cineduct:state` 里可以带上 `transport`（`dxgi-interop` / `java`），而排查"这条播放到底跑在哪个子进程上"要靠 `docs/host-uuid.md` 的身份体系。**不要在报文里暴露子进程 pid 或 UUID** —— 那是客户端内部实现，服务端不需要知道，也不该被允许指定。

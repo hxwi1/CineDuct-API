@@ -35,6 +35,11 @@ repositories {
     maven { url = "https://maven.aliyun.com/repository/gradle-plugin" }
     maven { url = "https://cursemaven.com" }
     maven { url = "https://maven.shedaniel.me/" }
+    // Sodium 的配置 API 工件（设置页挂进 Sodium 视频设置界面用）
+    maven {
+        name = "CaffeineMC"
+        url = "https://maven.caffeinemc.net/releases"
+    }
 }
 
 base {
@@ -138,28 +143,33 @@ ext.ffmpegBindingVersion = '8.0.1-1.5.13'
 ext.javacppVersion = '1.5.13'
 
 dependencies {
-    // 目标 mod（waterframes / bilibili_media / watermedia）仅供编译期使用。
-    // 运行时这些 mod 由玩家自行安装，因此全部 compileOnly，绝不打包进本 mod。
-    // 将已编译好的 bilibili-med-mod 与 watermedia jar 放入 ./libs 目录后构建。
-    compileOnly fileTree(dir: 'libs', include: ['*.jar'])
+    /*
+     * 本模组【不依赖任何前置 mod】：不再需要 waterframes / watermedia / bilibili_media 的 jar，
+     * 所以这里没有任何 fileTree(libs) 或 curse 依赖，也没有 jar-in-jar 空壳。
+     * 屏幕、播放、解析全部自研（播放兜底走 dev.mediafix.engine 的进程内 FFmpeg 引擎）。
+     */
 
-    // 备选：若不想手动放置 jar，可取消注释用 curse 拉取（须与运行时版本一致）
-    // compileOnly "curse.maven:watermedia-869524:6875641"
-
-    // bilibili_media 空壳：打进本 jar 的 META-INF/jarjar/，让客户端的模组列表里出现
-    // bilibili_media 2.3，从而通过装了真 bilibili_media 2.3 的服务端的 MATCH_VERSION 校验。
-    // 详见 bilibili-media-stub/ （无代码，lowcodefml 元数据）。
-    // 空壳与真 bilibili_media 互斥（同 modId）。构建时加 -PnoStub 即可产出"不带空壳"的版本，
-    // 用于客户端需要真实 bilibili_media（会做 B 站链接解析）的场景。
-    if (!project.hasProperty('noStub')) {
-        jarJar(project(':bilibili-media-stub'))
-    }
-
-    // FFmpeg（JavaCPP 绑定）：编译期 + 打进本 jar
+    // FFmpeg（JavaCPP 绑定）：编译期 + 开发环境运行期 + 打进本 jar
+    /*
+     * ★ 三条声明各有分工，缺一不可（这一处踩过一次，务必看清）：
+     *
+     *   compileOnly               —— 只用于编译（不进 artifact 的 POM，不污染 runtimeClasspath）
+     *   ffmpegApi                 —— 只喂给 jar 任务，把这套 Java 绑定 shade 进 mod jar，
+     *                               保证玩家那边"一个 jar 就能跑"
+     *   additionalRuntimeClasspath—— ModDevGradle 专门给开发环境补运行期库的配置。
+     *                               缺了它，runClient 里加载不到 org.bytedeco.ffmpeg.*，
+     *                               probe() 抛 NoClassDefFoundError，日志却是
+     *                               "原生库已解压但加载失败"（因为异常被吞了），
+     *                               看起来像 DLL 版本/架构问题 —— 排查方向会被完全带偏。
+     *                               （implementation / localRuntime 都不会进 runClient 的 classpath；
+     *                                可用 .\gradlew.bat checkDevClasspath 复查）
+     */
     compileOnly "org.bytedeco:javacpp:${javacppVersion}"
     compileOnly "org.bytedeco:ffmpeg:${ffmpegBindingVersion}"
     ffmpegApi "org.bytedeco:javacpp:${javacppVersion}"
     ffmpegApi "org.bytedeco:ffmpeg:${ffmpegBindingVersion}"
+    additionalRuntimeClasspath "org.bytedeco:javacpp:${javacppVersion}"
+    additionalRuntimeClasspath "org.bytedeco:ffmpeg:${ffmpegBindingVersion}"
 
     // 原生库：仅在本地打包/验证时参与（windows-x86_64；其它平台按需加 classifier）
     ffmpegNatives "org.bytedeco:javacpp:${javacppVersion}:windows-x86_64"
@@ -168,14 +178,45 @@ dependencies {
     // 登录二维码：ZXing core（Apache-2.0），只需 core，PNG 由 JDK 的 ImageIO 写
     compileOnly "com.google.zxing:core:3.5.3"
     shadedLibs "com.google.zxing:core:3.5.3"
+    /*
+     * 开发环境也要能跑二维码：shadedLibs 只喂给 jar 任务，runClient 的 classpath 里没有它。
+     * 加进 additionalRuntimeClasspath 后，游戏内（例如登录界面）才真的能编出二维码；
+     * 少了这一条，dev 环境里画二维码会抛 NoClassDefFoundError 而被兜底逻辑吞掉。
+     */
+    additionalRuntimeClasspath "com.google.zxing:core:3.5.3"
+
+    /*
+     * Sodium 配置 API —— 把本模组的设置页注册进 Sodium 的「视频设置」界面。
+     *
+     * ★ 只用 compileOnly：NeoForge 的 api 工件没有 remap（sodium/build.gradle.kts 的 mavenApi
+     *   只打包不 remap），按普通 jar 依赖即可；而且这些类在运行时由 Sodium 本体提供，
+     *   绝不能打进本模组的 jar，否则会和 Sodium 冲突。
+     * ★ 运行时是**可选**的：入口类带 @ConfigEntryPointForge 注解，只有 Sodium 在场时才会被它
+     *   Class.forName 加载，所以没装 Sodium 也不会 NoClassDefFoundError。
+     * 版本号规则 <MOD_VERSION>+mc<MC_VERSION>，与 jar 里声明的 Sodium 版本对齐。
+     */
+    compileOnly "net.caffeinemc:sodium-neoforge-api:${sodium_version}"
+
+    /*
+     * 开发环境运行期挂上 Sodium 本体：runClient 里才真的能看到「视频设置 -> CineDuct API」这一页。
+     * localRuntime 只进开发环境，不写进 POM、不会传递出去，发布 jar 里也不会带它。
+     * 如果不想让 dev 环境带 Sodium，把下面一行注释掉即可（编译不受影响）。
+     *
+     * ★ transitive = false 是必须的：Sodium 的 POM 里声明了 4 个 Sinytra forgified fabric api 的
+     *   runtime 依赖，而本项目没有配 Sinytra 的仓库（也不需要 —— Sodium 的 jar 里已经用 JarJar
+     *   把这几份打进去了）。开着传递依赖解析会去找那些坐标，一直失败重试，把 gradle 卡住。
+     */
+    localRuntime("net.caffeinemc:sodium-neoforge:${sodium_version}") {
+        transitive = false
+    }
 }
 
 // 生成原生库压缩包：既用于塞进主 jar，也可单独分发
-// （放到 mods/ 或 config/mediafix/natives/ 下同样能被自动发现）
+// （放到 mods/ 或 config/cineduct/natives/ 下同样能被自动发现）
 def ffmpegNativesZip = tasks.register('ffmpegNativesZip', Zip) {
-    group = 'mediafix'
+    group = 'cineduct'
     description = '打包 FFmpeg 原生库（当前为 windows-x86_64）'
-    archiveFileName = 'mediafix-ffmpeg-natives-windows-x86_64.zip'
+    archiveFileName = 'cineduct-ffmpeg-natives-windows-x86_64.zip'
     destinationDirectory = layout.buildDirectory.dir('libs')
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from(provider { configurations.ffmpegNatives.collect { it.isDirectory() ? it : zipTree(it) } }) {
@@ -190,8 +231,8 @@ def ffmpegNativesZip = tasks.register('ffmpegNativesZip', Zip) {
 /*
  * 把 FFmpeg 的 Java 绑定 + 原生库压缩包一起打进本 mod 的 jar。
  *
- * 运行时由 dev.mediafix.ffmpeg.FfmpegRuntime 把 jar 内的 mediafix-natives/ffmpeg-natives.zip
- * 解压到 <gamedir>/mediafix-ffmpeg/v2-bundled-<大小>-<CRC>/，再交给 JavaCPP 加载。
+ * 运行时由 dev.mediafix.ffmpeg.FfmpegRuntime 把 jar 内的 cineduct-natives/ffmpeg-natives.zip
+ * 解压到 <gamedir>/cineduct-ffmpeg/v2-bundled-<大小>-<CRC>/，再交给 JavaCPP 加载。
  * 这样分发只需要【一个 jar】；旧版那种"jar + 单独 natives zip"的方式仍然兼容，
  * 也可以用 -PnoNativesInJar 退回（产出一个不含原生库的小 jar）。
  */
@@ -221,9 +262,53 @@ if (!project.hasProperty('noNativesInJar')) {
     tasks.named('processResources', ProcessResources).configure {
         dependsOn ffmpegNativesZip
         from(ffmpegNativesZip.flatMap { it.archiveFile }) {
-            into 'mediafix-natives'
+            into 'cineduct-natives'
             rename { 'ffmpeg-natives.zip' }
         }
+    }
+}
+
+/*
+ * 把 C++ 子进程（cineduct-host.exe）与游戏进程内的 D3D11 垫片（cineduct-glshim.dll）
+ * 一并打进 jar：运行时由 NativeFiles 释放到 <gamedir>/cineduct-native/ 再加载，
+ * 于是玩家**只需要一个 jar**，不会出现"漏放 exe/dll 导致功能静默降级"。
+ * 原生部分还没构建时这里什么都不加（from 不存在的目录是安全的）。
+ */
+tasks.named('processResources', ProcessResources).configure {
+    from(layout.projectDirectory.dir('native/build/bin')) {
+        include 'cineduct-host.exe', 'cineduct-glshim.dll'
+        into 'cineduct-native'
+    }
+}
+
+/*
+ * 许可文本随 jar 一起分发。
+ *
+ * <p>为什么必须有：GPLv3 要求"把本许可的一份副本随程序一起交给接收者"，LGPL / MIT /
+ * Apache-2.0 也要求保留各自的版权与许可声明。而 shade 规则是 `exclude 'META-INF/**'`，
+ * 等于把被 shade 的那些库自带的 META-INF/LICENSE 全排除了 —— 所以这里显式把许可放进去。
+ *
+ * <ul>
+ *   <li>{@code META-INF/LICENSE-GPL-3.0.txt} —— 本项目主许可（GPLv3 全文）；</li>
+ *   <li>{@code META-INF/LICENSE-EXCEPTION.md} —— GPLv3 第 7 节的 API/Mixin 附加许可；</li>
+ *   <li>{@code META-INF/THIRD_PARTY_NOTICES.md} —— 第三方组件清单与源码获取方式；</li>
+ *   <li>{@code META-INF/licenses/*} —— FFmpeg(LGPLv3)、JavaCPP、ZXing、CicadaPlayer 的许可原文。</li>
+ * </ul>
+ */
+tasks.named('processResources', ProcessResources).configure {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(layout.projectDirectory.file('LICENSE')) {
+        into 'META-INF'
+        rename { 'LICENSE-GPL-3.0.txt' }
+    }
+    from(layout.projectDirectory.file('LICENSE-EXCEPTION.md')) {
+        into 'META-INF'
+    }
+    from(layout.projectDirectory.file('THIRD_PARTY_NOTICES.md')) {
+        into 'META-INF'
+    }
+    from(layout.projectDirectory.dir('licenses')) {
+        into 'META-INF/licenses'
     }
 }
 
@@ -274,5 +359,49 @@ idea {
     module {
         downloadSources = true
         downloadJavadoc = true
+    }
+}
+
+/*
+ * 诊断用：打印开发环境实际会用的运行期 classpath 里有没有 bytedeco。
+ * 开发环境"找不到 bytedeco 类"这类问题排查过一次（见上面 dependencies 的注释），
+ * 留一个可复现的检查入口，比事后靠日志猜省事。
+ *
+ *   .\gradlew.bat dumpDevClasspath
+ */
+/*
+ * 开发环境"缺依赖"排查提示：
+ * runClient 实际读的 classpath 就在 build/moddev/clientLegacyClasspath.txt
+ * （由 ModDevGradle 的 writeClientLegacyClasspath 任务生成）。怀疑"开发环境加载不到某个类"
+ * 时直接搜这个文件，比靠日志猜快得多 —— 本项目的 FFmpeg 绑定就踩过一次：
+ * 只声明 compileOnly 时它不在这个文件里，于是 probe() 抛 NoClassDefFoundError，
+ * 却被误报成"原生库版本/架构不匹配"。
+ */
+tasks.register('checkDevClasspath') {
+    group = 'cineduct'
+    description = '检查开发环境 classpath 里有没有 bytedeco（FFmpeg 绑定）；FFmpeg 绑定必须声明为 additionalRuntimeClasspath'
+    notCompatibleWithConfigurationCache('诊断任务，需要读取实时配置')
+    doLast {
+        def keywords = ['bytedeco', 'zxing']
+        def hit = { path -> keywords.any { k -> path.toLowerCase().contains(k) } }
+        def ok = true
+        ['client', 'server'].each { name ->
+            def f = layout.buildDirectory.file("moddev/${name}LegacyClasspath.txt").get().asFile
+            if (!f.exists()) {
+                println "[checkDevClasspath] ${name}: 还没生成（先跑一次 run${name.capitalize()}）"
+                return
+            }
+            // FML 就是按这份清单决定"mod 能看到哪些库"——它才是判断依据
+            def hits = f.readLines().findAll(hit)
+            println "[checkDevClasspath] ${name}: ${f.name} 共 ${f.readLines().size()} 行，命中 ${hits.size()} 条"
+            hits.each { println "    ✔ ${it.tokenize(File.separator).last()}" }
+            if (hits.isEmpty()) {
+                ok = false
+                println "    ✘ 缺 FFmpeg 绑定 → 开发环境会报 NoClassDefFoundError: org/bytedeco/ffmpeg/global/avutil"
+            }
+        }
+        if (!ok) {
+            println '[checkDevClasspath] 修法：dependencies 里加 additionalRuntimeClasspath "org.bytedeco:..."'
+        }
     }
 }

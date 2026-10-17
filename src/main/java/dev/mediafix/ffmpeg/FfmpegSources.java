@@ -1,6 +1,6 @@
 package dev.mediafix.ffmpeg;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 import dev.mediafix.config.FfmpegConfig;
 
 import java.net.URI;
@@ -28,10 +28,10 @@ public final class FfmpegSources {
             FfmpegVideoSource src = new FfmpegVideoSource(resolvedUri, buildHeaders(resolvedUri));
             src.start();
             SOURCES.put(player, src);
-            MediaFix.LOGGER.info("[mediafix] 已为该播放器接管视频解码: {}", resolvedUri);
+            CineDuct.LOGGER.info("[CineDuct] 已为该播放器接管视频解码: {}", resolvedUri);
             return src;
         } catch (Throwable t) {
-            MediaFix.LOGGER.error("[mediafix] 创建 FFmpeg 数据源失败", t);
+            CineDuct.LOGGER.error("[CineDuct] 创建 FFmpeg 数据源失败", t);
             return null;
         }
     }
@@ -47,7 +47,7 @@ public final class FfmpegSources {
             try {
                 old.close();
             } catch (Throwable t) {
-                MediaFix.LOGGER.warn("[mediafix] 关闭 FFmpeg 数据源异常", t);
+                CineDuct.LOGGER.warn("[CineDuct] 关闭 FFmpeg 数据源异常", t);
             }
         }
     }

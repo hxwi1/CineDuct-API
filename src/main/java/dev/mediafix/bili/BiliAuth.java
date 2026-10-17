@@ -1,6 +1,6 @@
 package dev.mediafix.bili;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 import net.neoforged.fml.loading.FMLPaths;
 
 import java.io.InputStream;
@@ -96,7 +96,7 @@ public final class BiliAuth {
             }
             String v = props.getProperty(COOKIE_KEY, "").trim();
             if (v.isEmpty()) return null;
-            MediaFix.LOGGER.info("[mediafix] 已读取 B 站登录态: {}", path);
+            CineDuct.LOGGER.info("[CineDuct] 已读取 B 站登录态: {}", path);
             return v;
         } catch (Throwable t) {
             return null;

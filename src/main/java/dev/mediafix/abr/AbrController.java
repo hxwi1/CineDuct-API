@@ -1,6 +1,6 @@
 package dev.mediafix.abr;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 
 /**
  * 自适应码率控制器（ABR）。
@@ -81,10 +81,10 @@ public final class AbrController {
                 // 两种原因的措辞要分开：以前共用一句"估计带宽 X 撑不住 Y"，
                 // 结果日志里出现"52Mbps 撑不住 2Mbps"这种读起来像 bug 的记录
                 if (byBandwidth) {
-                    MediaFix.LOGGER.warn("[mediafix] ABR 降档：估计带宽 {}kbps 低于当前档位 {}kbps 的安全线",
+                    CineDuct.LOGGER.warn("[CineDuct] ABR 降档：估计带宽 {}kbps 低于当前档位 {}kbps 的安全线",
                             est / 1000, bitrate / 1000);
                 } else {
-                    MediaFix.LOGGER.warn("[mediafix] ABR 降档：最近发生过缓冲见底（与实测带宽无关，估计带宽 {}kbps）",
+                    CineDuct.LOGGER.warn("[CineDuct] ABR 降档：最近发生过缓冲见底（与实测带宽无关，估计带宽 {}kbps）",
                             est / 1000);
                 }
                 return -1;
@@ -104,7 +104,7 @@ public final class AbrController {
                 && est > 0 && up.bandwidthBps() <= est * UP_FACTOR) {
             lastSwitchAt = now;
             healthySince = 0;
-            MediaFix.LOGGER.info("[mediafix] ABR 升档：估计带宽 {}kbps 足以支撑 {}kbps",
+            CineDuct.LOGGER.info("[CineDuct] ABR 升档：估计带宽 {}kbps 足以支撑 {}kbps",
                     est / 1000, up.bandwidthBps() / 1000);
             return 1;
         }

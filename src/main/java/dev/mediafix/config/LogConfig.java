@@ -12,17 +12,17 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 日志配置：本模组的诊断日志默认写到游戏根目录的 {@code mediafixlogs/}，
+ * 日志配置：本模组的诊断日志默认写到游戏根目录的 {@code cineductlogs/}，
  * 避免高频诊断把 latest.log 刷得没法查别的问题。
  *
  * <p>事件与警告仍会同时写进 latest.log（{@link #mirrorToMain}），
  * 这样别人看主日志也知道本模组做了什么；需要细节时再翻独立日志。
- * 配置存于游戏目录 mediafix-log.json。
+ * 配置存于游戏目录 cineduct-log.json。
  */
 public final class LogConfig {
 
     /** 日志子目录名（相对游戏根目录）。 */
-    public static String dir = "mediafixlogs";
+    public static String dir = "cineductlogs";
     /** 保留最近多少个日志文件（每次启动一个文件）。 */
     public static int keepFiles = 10;
     /** 事件/警告是否同时写进 latest.log。 */
@@ -30,7 +30,7 @@ public final class LogConfig {
     /** 高频诊断（引擎状态、每帧耗时、取帧、内存）是否写入独立日志。 */
     public static boolean diagEnabled = true;
 
-    private static final Path CFG = FMLPaths.GAMEDIR.get().resolve("mediafix-log.json");
+    private static final Path CFG = FMLPaths.GAMEDIR.get().resolve("cineduct-log.json");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private LogConfig() {

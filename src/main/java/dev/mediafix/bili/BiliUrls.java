@@ -1,6 +1,6 @@
 package dev.mediafix.bili;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -111,11 +111,11 @@ public final class BiliUrls {
             HttpResponse<Void> resp = CLIENT.send(req, HttpResponse.BodyHandlers.discarding());
             URI finalUri = resp.uri();
             if (finalUri != null && finalUri.getHost() != null) {
-                MediaFix.LOGGER.info("[mediafix] 短链展开: {} -> {}", uri, finalUri);
+                CineDuct.LOGGER.info("[CineDuct] 短链展开: {} -> {}", uri, finalUri);
                 return finalUri;
             }
         } catch (Throwable t) {
-            MediaFix.LOGGER.warn("[mediafix] 短链展开失败: {}", uri);
+            CineDuct.LOGGER.warn("[CineDuct] 短链展开失败: {}", uri);
         }
         return uri;
     }

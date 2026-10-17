@@ -1,6 +1,6 @@
 package dev.mediafix.engine;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
@@ -136,7 +136,7 @@ public final class AudioSink implements AutoCloseable {
                     sampleRate, 16, channels, channels * 2, sampleRate, false);
             DataLine.Info info = new DataLine.Info(SourceDataLine.class, format);
             if (!AudioSystem.isLineSupported(info)) {
-                MediaFix.LOGGER.warn("[mediafix] 音频设备不支持 {}ch {}Hz S16", channels, sampleRate);
+                CineDuct.LOGGER.warn("[CineDuct] 音频设备不支持 {}ch {}Hz S16", channels, sampleRate);
                 return false;
             }
             SourceDataLine dl = (SourceDataLine) AudioSystem.getLine(info);
@@ -149,12 +149,12 @@ public final class AudioSink implements AutoCloseable {
             this.channels = channels;
             this.sampleRate = sampleRate;
             this.writtenFrames = 0;
-            MediaFix.LOGGER.info("[mediafix] 音频输出已打开: {}ch {}Hz S16 行缓冲={}ms (请求 {}ms)",
+            CineDuct.LOGGER.info("[CineDuct] 音频输出已打开: {}ch {}Hz S16 行缓冲={}ms (请求 {}ms)",
                     channels, sampleRate, capacityMs(),
                     dev.mediafix.config.FfmpegConfig.audioBufferMs);
             return true;
         } catch (Throwable t) {
-            MediaFix.LOGGER.warn("[mediafix] 音频输出打开失败 ({}ch {}Hz): {}", channels, sampleRate, String.valueOf(t));
+            CineDuct.LOGGER.warn("[CineDuct] 音频输出打开失败 ({}ch {}Hz): {}", channels, sampleRate, String.valueOf(t));
             return false;
         }
     }
@@ -219,7 +219,7 @@ public final class AudioSink implements AutoCloseable {
             this.shortWrites++;
             if (System.currentTimeMillis() - this.lastShortLogAt > 1000L) {
                 this.lastShortLogAt = System.currentTimeMillis();
-                dev.mediafix.MediaFix.LOGGER.warn("[mediafix] 声卡只接受了 {} / {} 字节（累计 {} 次）—— 这一段音频会被截断",
+                dev.mediafix.CineDuct.LOGGER.warn("[CineDuct] 声卡只接受了 {} / {} 字节（累计 {} 次）—— 这一段音频会被截断",
                         off, length, this.shortWrites);
             }
         }
@@ -282,8 +282,8 @@ public final class AudioSink implements AutoCloseable {
                     for (int k = 0; k < 4 && (k + 1) * fstep <= length; k++) {
                         next.append(this.scratch[k * fstep]).append(' ');
                     }
-                    dev.mediafix.MediaFix.LOGGER.warn(
-                            "[mediafix] 块边界爆音：跳变={} 块内最大={} 累计={} | 上一块尾采样[{}] 本块首采样[{}] 增益={} 设备接收={}/{}",
+                    dev.mediafix.CineDuct.LOGGER.warn(
+                            "[CineDuct] 块边界爆音：跳变={} 块内最大={} 累计={} | 上一块尾采样[{}] 本块首采样[{}] 增益={} 设备接收={}/{}",
                             jump, maxInner, this.seams, prev.toString().trim(), next.toString().trim(),
                             String.format("%.3f", this.gain * this.masterGain), this.lastAccepted, length);
                 }
@@ -339,7 +339,7 @@ public final class AudioSink implements AutoCloseable {
             this.shortWrites++;
             if (System.currentTimeMillis() - this.lastShortLogAt > 1000L) {
                 this.lastShortLogAt = System.currentTimeMillis();
-                dev.mediafix.MediaFix.LOGGER.warn("[mediafix] 声卡只接受了 {} / {} 字节（累计 {} 次）—— 这一段音频会被截断",
+                dev.mediafix.CineDuct.LOGGER.warn("[CineDuct] 声卡只接受了 {} / {} 字节（累计 {} 次）—— 这一段音频会被截断",
                         off, length, this.shortWrites);
             }
         }

@@ -8,7 +8,3 @@ pluginManagement {
 plugins {
     id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
 }
-
-// bilibili_media 空壳（元数据占位，仅用于通过服务端 MATCH_VERSION 校验），
-// 由主工程以 jar-in-jar 方式打包进 mediafix。
-include 'bilibili-media-stub'

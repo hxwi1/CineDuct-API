@@ -1,6 +1,6 @@
 package dev.mediafix.ffmpeg;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 import dev.mediafix.config.FfmpegConfig;
 import net.neoforged.fml.loading.FMLPaths;
 
@@ -24,13 +24,13 @@ import java.util.zip.ZipFile;
  * → 再让 JavaCPP 加载。
  *
  * <p><b>压缩包现在直接打在本 mod 的 jar 里</b>（{@value #BUNDLED_PATH}），
- * 所以分发只需要一个 jar，首次启动自动解压到 {@code <gamedir>/mediafix-ffmpeg/v2-bundled-…/}。
+ * 所以分发只需要一个 jar，首次启动自动解压到 {@code <gamedir>/cineduct-ffmpeg/v2-bundled-…/}。
  *
  * <p>查找顺序：
  * <ol>
  *   <li>配置里显式指定的 nativesPath（文件或目录）—— 用于换成别的 FFmpeg 版本/平台；</li>
  *   <li><b>本 jar 内置的压缩包</b>（默认，无需任何额外文件）；</li>
- *   <li>{@code <gamedir>/config/mediafix/natives/} 与 {@code <gamedir>/mods/} 下的
+ *   <li>{@code <gamedir>/config/cineduct/natives/} 与 {@code <gamedir>/mods/} 下的
  *       *.zip / *.jar（旧的分发方式，仍然兼容）；</li>
  *   <li>直接走 classpath（若使用者自行把原生库放进了某个 jar）。</li>
  * </ol>
@@ -38,7 +38,7 @@ import java.util.zip.ZipFile;
 public final class FfmpegRuntime {
 
     /** 打进本 mod jar 的原生库压缩包路径（由 build.gradle 的 jar 任务放入）。 */
-    private static final String BUNDLED_PATH = "mediafix-natives/ffmpeg-natives.zip";
+    private static final String BUNDLED_PATH = "cineduct-natives/ffmpeg-natives.zip";
 
     private static final String PRELOAD_PROP = "org.bytedeco.javacpp.platform.preloadpath";
     private static final String PATHS_FIRST_PROP = "org.bytedeco.javacpp.pathsFirst";
@@ -59,6 +59,13 @@ public final class FfmpegRuntime {
         return status;
     }
 
+    /** 原生库解压目录（C++ 子进程要用**同一批 DLL**，保证两条路径的 FFmpeg 构建一致）。 */
+    public static java.nio.file.Path nativesDir() {
+        return extractedDir;
+    }
+
+    private static volatile java.nio.file.Path extractedDir;
+
     /**
      * 确保 FFmpeg 可用。可重复调用；只在第一次真正做事。
      * @return true 表示后续可以安全调用 org.bytedeco.ffmpeg.* 的函数
@@ -78,7 +85,7 @@ public final class FfmpegRuntime {
                 return true;
             }
             status = "未找到 FFmpeg 原生库（本 mod 自带，若缺失请重新下载完整 jar）";
-            MediaFix.LOGGER.warn("[mediafix] {}", status);
+            CineDuct.LOGGER.warn("[CineDuct] {}", status);
             return false;
         }
 
@@ -86,11 +93,12 @@ public final class FfmpegRuntime {
         String srcName = useBundled ? "jar 内置原生库" : archive.getFileName().toString();
         try {
             String tag = useBundled ? bundledTag() : archive.getFileName().toString().replaceAll("[^A-Za-z0-9._-]", "_");
-            Path dir = FMLPaths.GAMEDIR.get().resolve("mediafix-ffmpeg").resolve("v2-" + tag);
+            Path dir = FMLPaths.GAMEDIR.get().resolve("cineduct-ffmpeg").resolve("v2-" + tag);
+            extractedDir = dir;   // 子进程直接加载这里的 DLL（同一个 FFmpeg 构建）
             Path marker = dir.resolve(".unpacked");
             if (!Files.exists(marker)) {
                 if (useBundled) {
-                    MediaFix.LOGGER.info("[mediafix] 首次启动：正在解压内置的 FFmpeg 原生库（约 30MB，之后启动会跳过）");
+                    CineDuct.LOGGER.info("[CineDuct] 首次启动：正在解压内置的 FFmpeg 原生库（约 30MB，之后启动会跳过）");
                     try (InputStream in = FfmpegRuntime.class.getClassLoader().getResourceAsStream(BUNDLED_PATH)) {
                         if (in == null) throw new IllegalStateException("jar 内缺少 " + BUNDLED_PATH);
                         extractStream(in, dir);
@@ -116,36 +124,59 @@ public final class FfmpegRuntime {
             }
             System.setProperty(PRELOAD_PROP, preload.toString());
             System.setProperty(PATHS_FIRST_PROP, "true");
-            MediaFix.LOGGER.info("[mediafix] FFmpeg 原生库目录: {}", dir);
+            CineDuct.LOGGER.info("[CineDuct] FFmpeg 原生库目录: {}", dir);
         } catch (Throwable t) {
             status = "解压原生库失败: " + t;
-            MediaFix.LOGGER.error("[mediafix] {}", status, t);
+            CineDuct.LOGGER.error("[CineDuct] {}", status, t);
             return false;
         }
 
         if (probe()) {
             available = true;
             status = "已从 " + srcName + " 解压加载";
-            MediaFix.LOGGER.info("[mediafix] FFmpeg 可用: {}", status);
+            CineDuct.LOGGER.info("[CineDuct] FFmpeg 可用: {}", status);
             return true;
         }
-        status = "原生库已解压但加载失败（版本/架构不匹配？）";
-        MediaFix.LOGGER.error("[mediafix] {}", status);
+        // ★ 一定要把真实原因写进 status：曾经这里只写"版本/架构不匹配？"，
+        // 而真正的原因是开发环境运行期 classpath 里没有 org.bytedeco.ffmpeg.*（NoClassDefFoundError），
+        // 害得排查方向完全跑偏。
+        status = "原生库已解压但加载失败: " + lastProbeError;
+        CineDuct.LOGGER.error("[CineDuct] {}", status);
         return false;
+    }
+
+    /** 最近一次探测失败的原因（完整异常）。 */
+    private static volatile String lastProbeError = "未探测";
+
+    /**
+     * 清掉"已经试过"的缓存后重新加载。
+     *
+     * <p>用途：临时性失败（DLL 被杀软短暂锁定、解压途中被中断）不必重启游戏 ——
+     * {@code /cineduct status} 在原生库不可用时会自动调一次。
+     */
+    public static synchronized boolean retry() {
+        attempted = false;
+        available = false;
+        status = "未初始化";
+        CineDuct.LOGGER.info("[CineDuct] 重新尝试加载 FFmpeg 原生库…");
+        return ensure();
     }
 
     /** 触发一次真正的 FFmpeg 调用，验证 JNI + 原生库齐全。 */
     private static boolean probe() {
         try {
             int v = org.bytedeco.ffmpeg.global.avutil.avutil_version();
+            lastProbeError = "无";
             if (FfmpegConfig.verbose) {
-                MediaFix.LOGGER.info("[mediafix] FFmpeg avutil 版本号: {} ({}), avcodec: {}",
+                CineDuct.LOGGER.info("[CineDuct] FFmpeg avutil 版本号: {} ({}), avcodec: {}",
                         v, org.bytedeco.ffmpeg.global.avutil.av_version_info(),
                         org.bytedeco.ffmpeg.global.avcodec.avcodec_version());
             }
             return v != 0;
         } catch (Throwable t) {
-            if (FfmpegConfig.verbose) MediaFix.LOGGER.info("[mediafix] FFmpeg 探测失败: {}", String.valueOf(t));
+            // 无论 verbose 与否都要留下原因（并且带上堆栈），否则只能靠猜
+            lastProbeError = String.valueOf(t);
+            CineDuct.LOGGER.error("[CineDuct] FFmpeg 探测失败: {}", lastProbeError, t);
             return false;
         }
     }
@@ -219,15 +250,15 @@ public final class FfmpegRuntime {
                 n++;
             }
         }
-        MediaFix.LOGGER.info("[mediafix] 解压 FFmpeg 原生库 {} 个文件 -> {}", n, dir);
+        CineDuct.LOGGER.info("[CineDuct] 解压 FFmpeg 原生库 {} 个文件 -> {}", n, dir);
     }
 
     private static Path locateArchive() {
         List<Path> dirs = new ArrayList<>();
         try {
-            dirs.add(FMLPaths.GAMEDIR.get().resolve("config").resolve("mediafix").resolve("natives"));
+            dirs.add(FMLPaths.GAMEDIR.get().resolve("config").resolve("cineduct").resolve("natives"));
             dirs.add(FMLPaths.GAMEDIR.get().resolve("mods"));
-            dirs.add(FMLPaths.GAMEDIR.get().resolve("mediafix-ffmpeg"));
+            dirs.add(FMLPaths.GAMEDIR.get().resolve("cineduct-ffmpeg"));
         } catch (Throwable ignored) {
         }
 
@@ -250,7 +281,7 @@ public final class FfmpegRuntime {
                         .filter(p -> {
                             String n = p.getFileName().toString().toLowerCase(Locale.ROOT);
                             if (!(n.endsWith(".zip") || n.endsWith(".jar"))) return false;
-                            return n.contains("ffmpeg-natives") || n.contains("ffmpeg_natives") || n.contains("mediafix-ffmpeg");
+                            return n.contains("ffmpeg-natives") || n.contains("ffmpeg_natives") || n.contains("cineduct-ffmpeg");
                         })
                         .filter(p -> {
                             String n = p.getFileName().toString().toLowerCase(Locale.ROOT);
@@ -310,7 +341,7 @@ public final class FfmpegRuntime {
                 }
                 n++;
             }
-            MediaFix.LOGGER.info("[mediafix] 解压 FFmpeg 原生库 {} 个文件 -> {}", n, dir);
+            CineDuct.LOGGER.info("[CineDuct] 解压 FFmpeg 原生库 {} 个文件 -> {}", n, dir);
         }
     }
 }

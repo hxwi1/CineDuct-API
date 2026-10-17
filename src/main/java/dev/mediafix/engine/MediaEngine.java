@@ -1,6 +1,6 @@
 package dev.mediafix.engine;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 import dev.mediafix.abr.AbrController;
 import dev.mediafix.abr.AbrLadder;
 import dev.mediafix.config.FfmpegConfig;
@@ -150,7 +150,7 @@ public final class MediaEngine implements AutoCloseable {
 
     /** 异步启动：立刻返回，打开与协商在后台线程完成。 */
     public void start() {
-        Thread t = new Thread(this::boot, "mediafix-engine-boot");
+        Thread t = new Thread(this::boot, "cineduct-engine-boot");
         t.setDaemon(true);
         this.bootThread = t;
         t.start();
@@ -170,18 +170,18 @@ public final class MediaEngine implements AutoCloseable {
             this.durationMs = this.video != null && this.video.durationMs() > 0
                     ? this.video.durationMs()
                     : (this.audio != null ? this.audio.durationMs() : -1L);
-            MediaFix.LOGGER.info("[mediafix] 引擎就绪: video={} audio={} duration={}ms",
-                    MediaFix.LOGGER.url(this.videoUri), MediaFix.LOGGER.url(this.audioUri), this.durationMs);
+            CineDuct.LOGGER.info("[CineDuct] 引擎就绪: video={} audio={} duration={}ms",
+                    CineDuct.LOGGER.url(this.videoUri), CineDuct.LOGGER.url(this.audioUri), this.durationMs);
             if (this.pendingSeekMs > 0) {
                 long pos = this.pendingSeekMs;
                 this.pendingSeekMs = 0;
-                MediaFix.LOGGER.info("[mediafix] 应用挂起的跳转: {}ms（ABR 换档后接续位置）", pos);
+                CineDuct.LOGGER.info("[CineDuct] 应用挂起的跳转: {}ms（ABR 换档后接续位置）", pos);
                 seek(pos);
             }
         } catch (Throwable t) {
             this.lastError = String.valueOf(t);
             setState(State.ERROR);
-            MediaFix.LOGGER.error("[mediafix] 引擎启动失败", t);
+            CineDuct.LOGGER.error("[CineDuct] 引擎启动失败", t);
         }
     }
 
@@ -190,7 +190,7 @@ public final class MediaEngine implements AutoCloseable {
         FfmpegAudioSource src = new FfmpegAudioSource(this.audioUri, this.headers);
         if (!src.prepare()) {
             this.lastError = src.lastError();
-            MediaFix.LOGGER.warn("[mediafix] 音频打开失败，改为纯视频播放: {}", this.lastError);
+            CineDuct.LOGGER.warn("[CineDuct] 音频打开失败，改为纯视频播放: {}", this.lastError);
             src.close();
             return;
         }
@@ -202,23 +202,45 @@ public final class MediaEngine implements AutoCloseable {
 
         boolean opened = false;
         // 逐级降级：源声道 → 立体声 → 单声道；采样率降级到 48k
-        for (int ch : new int[]{channels, 2, 1}) {
-            for (int rate : new int[]{srcRate, 48000}) {
-                if (this.sink.open(ch, rate)) {
-                    opened = true;
-                    channels = ch;
+        /*
+         * ★ 试两轮，中间等 400ms。
+         *
+         * <p>为什么值得多等这一下：设备打不开有两个与"内容"无关的常见原因 ——
+         *   ① **上一个播放者还没放开端点**：回退场景里我们刚刚强杀掉子进程（WASAPI 独占/直通
+         *      模式下端点的释放不是瞬时的），此刻打开很容易失败，而失败一次就等于**永久没声音**
+         *      （下面这条路径没有别的重试）；
+         *   ② Windows 音频引擎正在重配端点（切默认设备、显示器休眠唤醒、采样率变更）。
+         * 这两种都是几百毫秒内自愈的，值得再试一轮再放弃。
+         */
+        for (int attempt = 0; attempt < 2 && !opened; attempt++) {
+            if (attempt > 0) {
+                try {
+                    Thread.sleep(400L);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
                     break;
                 }
+                CineDuct.LOGGER.warn("[CineDuct] 音频设备首次打开失败（可能被上一次播放占着/端点正在重配），"
+                        + "400ms 后重试一次");
             }
-            if (opened) break;
+            for (int ch : new int[]{channels, 2, 1}) {
+                for (int rate : new int[]{srcRate, 48000}) {
+                    if (this.sink.open(ch, rate)) {
+                        opened = true;
+                        channels = ch;
+                        break;
+                    }
+                }
+                if (opened) break;
+            }
         }
         if (!opened) {
-            MediaFix.LOGGER.error("[mediafix] 音频设备不可用，改为纯视频播放");
+            CineDuct.LOGGER.error("[CineDuct] 音频设备不可用，改为纯视频播放");
             src.close();
             return;
         }
 
-        MediaFix.LOGGER.info("[mediafix] 音频输出协商: 源 {} {}ch {}Hz -> 设备 {}ch {}Hz (设备最多 {}ch)",
+        CineDuct.LOGGER.info("[CineDuct] 音频输出协商: 源 {} {}ch {}Hz -> 设备 {}ch {}Hz (设备最多 {}ch)",
                 src.sourceCodecName(), srcCh, srcRate, channels, this.sink.sampleRate(), devMax);
         if (srcCh > channels) {
             /*
@@ -231,7 +253,7 @@ public final class MediaEngine implements AutoCloseable {
              * 没有开源渲染器，Java Sound 也没有 HDMI 位流直通(bitstream passthrough)能力，
              * 所以游戏里能拿到的最好结果就是"5.1 底混 + 按设备能力输出"。
              */
-            MediaFix.LOGGER.info("[mediafix] 多声道下混: {} {}ch -> {}ch（设备未暴露环绕声道，已按标准矩阵下混）",
+            CineDuct.LOGGER.info("[CineDuct] 多声道下混: {} {}ch -> {}ch（设备未暴露环绕声道，已按标准矩阵下混）",
                     src.sourceCodecName(), srcCh, channels);
         }
         src.start(channels, this.sink.sampleRate());
@@ -239,7 +261,7 @@ public final class MediaEngine implements AutoCloseable {
         this.currentAudioUri = this.audioUri;
         this.sink.setGain(this.volumePercent / 100f);
 
-        Thread t = new Thread(this::feedLoop, "mediafix-engine-audio");
+        Thread t = new Thread(this::feedLoop, "cineduct-engine-audio");
         t.setDaemon(true);
         this.feeder = t;
         t.start();
@@ -260,16 +282,28 @@ public final class MediaEngine implements AutoCloseable {
                 }
                 FfmpegAudioSource.Chunk chunk = this.pendingChunk;
                 this.pendingChunk = null;
+                long epoch = this.seekEpoch;
                 if (chunk == null) chunk = this.audio.poll();
+                if (chunk != null && epoch != this.seekEpoch) {
+                    /*
+                     * 这一块是 seek 之前取出来的（seek 刚在别的线程发生）：
+                     * 它的 PTS 属于旧位置，照写会把时钟重新锚回旧位置（详见 seek() 里的★说明）。
+                     * 交还槽位再取下一块 —— 绝不能只丢引用，那会把音频环形缓冲的槽位漏光。
+                     */
+                    this.audio.release(chunk);
+                    this.pendingChunk = null;
+                    continue;
+                }
                 if (chunk == null) {
                     checkEnded();
                     // 欠载：缓冲见底 = 网络没跟上。转 BUFFERING（画面不会继续跑），并留一条诊断
                     // 真欠载 = 设备缓冲和环形缓冲都空了；只差一次 poll 不算
-                    if (this.state == State.PLAYING && audioLeadMs() <= 0 && !this.audio.isEnded()) {
+                    if (this.state == State.PLAYING && audioLeadMs() <= 0 && !this.audio.isEnded()
+                            && !tailOfStream()) {
                         long now = System.currentTimeMillis();
                         if (now - this.lastUnderrunAt > 2000L) {
                             this.lastUnderrunAt = now;
-                            MediaFix.LOGGER.warn("[mediafix] 音频欠载：缓冲耗尽，等待网络（可能是带宽或 CDN 抖动）");
+                            CineDuct.LOGGER.warn("[CineDuct] 音频欠载：缓冲耗尽，等待网络（可能是带宽或 CDN 抖动）");
                         }
                         this.clock.pause();
                         setState(State.BUFFERING, "音频欠载");
@@ -286,7 +320,7 @@ public final class MediaEngine implements AutoCloseable {
                     }
                     this.audioSkipUntilMs = -1L;
                     this.sink.expectDiscontinuity();
-                    MediaFix.LOGGER.info("[mediafix] 音频快进完成：落到 {}ms（目标 {}ms）", chunk.ptsMs, skipUntil);
+                    CineDuct.LOGGER.info("[CineDuct] 音频快进完成：落到 {}ms（目标 {}ms）", chunk.ptsMs, skipUntil);
                 }
 
                 // 出队顺序必须单调递增：环形缓冲若把顺序搞乱，耳朵听到的就是"拼接没接好"
@@ -295,7 +329,7 @@ public final class MediaEngine implements AutoCloseable {
                     long now2 = System.currentTimeMillis();
                     if (now2 - this.lastOrderLogAt > 1000L) {
                         this.lastOrderLogAt = now2;
-                        MediaFix.LOGGER.warn("[mediafix] 音频出队顺序倒退：上一块 {}ms(槽{})，本块 {}ms(槽{})（差 {}ms）",
+                        CineDuct.LOGGER.warn("[CineDuct] 音频出队顺序倒退：上一块 {}ms(槽{})，本块 {}ms(槽{})（差 {}ms）",
                                 this.lastFedPts, this.lastFedSlot, chunk.ptsMs, chunk.slotIndex,
                                 chunk.ptsMs - this.lastFedPts);
                     }
@@ -336,7 +370,7 @@ public final class MediaEngine implements AutoCloseable {
                 long nowGain = System.currentTimeMillis();
                 if (nowGain - this.lastGainAt > 500L) {
                     this.lastGainAt = nowGain;
-                    this.masterGainCache = MediaEngines.masterGain();
+                    this.masterGainCache = dev.mediafix.player.MasterVolume.gain();
                 }
                 this.sink.setMasterGain(this.masterGainCache);
                 int written = this.sink.writeBatch(this.batchBuf, total);
@@ -383,7 +417,7 @@ public final class MediaEngine implements AutoCloseable {
                 if (this.liveSession && this.liveAnchorMs == 0L && this.state == State.PLAYING) {
                     this.liveAnchorMs = audibleMs - System.currentTimeMillis();
                     this.liveOpenWallMs = System.currentTimeMillis();
-                    MediaFix.LOGGER.info("[mediafix] 直播时间轴锚定: 锚点={}ms（原始PTS=系统时间+锚点，实测 1:1 同步）",
+                    CineDuct.LOGGER.info("[CineDuct] 直播时间轴锚定: 锚点={}ms（原始PTS=系统时间+锚点，实测 1:1 同步）",
                             this.liveAnchorMs);
                 }
 
@@ -416,7 +450,7 @@ public final class MediaEngine implements AutoCloseable {
                         && audioLeadMs() >= Math.min(audioGateMs() / 2, 400L)) {
                     this.clock.start();
                     if (this.state == State.BUFFERING) setState(State.PLAYING, "缓冲回填");
-                    else MediaFix.LOGGER.info("[mediafix] 状态={} 但时钟没在走（seek/饥饿后未复位）：重新启动时钟（时钟={}ms）",
+                    else CineDuct.LOGGER.info("[CineDuct] 状态={} 但时钟没在走（seek/饥饿后未复位）：重新启动时钟（时钟={}ms）",
                             this.state, timeMs());
                 }
                 promoteIfReady();
@@ -427,7 +461,7 @@ public final class MediaEngine implements AutoCloseable {
                 Thread.currentThread().interrupt();
                 return;
             } catch (Throwable t) {
-                MediaFix.LOGGER.error("[mediafix] 音频投喂线程异常", t);
+                CineDuct.LOGGER.error("[CineDuct] 音频投喂线程异常", t);
                 try {
                     Thread.sleep(50);
                 } catch (InterruptedException ie) {
@@ -462,7 +496,7 @@ public final class MediaEngine implements AutoCloseable {
         }
 
         if (!this.rebufferHold) {
-            if (this.state == State.PLAYING && !isEnded() && !v.isEnded()
+            if (this.state == State.PLAYING && !isEnded() && !v.isEnded() && !v.inputEnded()
                     && vbuf < VIDEO_LOW_BYTES && durationMs() > 0) {
                 this.rebufferHold = true;
                 this.sink.setPaused(true);
@@ -477,24 +511,41 @@ public final class MediaEngine implements AutoCloseable {
                      *  - 没有任何 seek 却长时间回填不上、且预读一直上不来：那才是清晰度超出网络能力。
                      */
                     boolean justSeeked = now - this.lastSeekAt < 5000L;
-                    MediaFix.LOGGER.warn("[mediafix] 视频缓冲见底（{}KB < {}KB）：暂停等待网络回填"
+                    CineDuct.LOGGER.warn("[CineDuct] 视频缓冲见底（{}KB < {}KB）：暂停等待网络回填"
                                     + " —— {}（预读 {}KB，seek 执行 {} 次 / 忽略原地 seek {} 次）",
                             vbuf / 1024, VIDEO_LOW_BYTES / 1024,
                             justSeeked ? "刚 seek 过，属预期重填"
-                                       : "长时间回填不上才说明清晰度超出网络能力，可 /mediafix-stream quality 降档",
+                                       : "长时间回填不上才说明清晰度超出网络能力，可 /cineduct-stream quality 降档",
                             vbuf / 1024, this.seekCount, this.ignoredSeekCount);
                 }
                 setState(State.BUFFERING, "视频缓冲见底");
             }
-        } else if (vbuf >= VIDEO_HIGH_BYTES || v.isEnded()) {
+        } else if (vbuf >= VIDEO_HIGH_BYTES || v.isEnded() || v.inputEnded()) {
             // 流已经读到尽头时不可能再回填到高水位：这时候的"等待网络"是等不到的，必须解除
             this.rebufferHold = false;
             this.sink.setPaused(false);
-            MediaFix.LOGGER.info("[mediafix] 视频缓冲已回填到 {}KB，恢复播放", vbuf / 1024);
+            CineDuct.LOGGER.info("[CineDuct] 视频缓冲已回填到 {}KB，恢复播放", vbuf / 1024);
         }
     }
 
     private long lastRebufferLogAt;
+
+    /** seek 代次：feedLoop 用它判断"手里这块是不是 seek 之前取出来的"（见 seek() 里的★说明）。 */
+    private volatile long seekEpoch;
+
+    /**
+     * 点播、且两条链的**解复用都已读到流尾**（不是"解复用空了"）。
+     *
+     * <p>用途：片尾那几秒"预读见底"是正常的收尾，不是网络卡顿。分不清这两件事的后果
+     * （2026-10-06 实测日志）：播放到结尾 → 预读 0KB → 判"视频缓冲见底/音频欠载（缓冲耗尽）"
+     * → 进 BUFFERING → 循环播放要等满 8 秒兜底才回卷。直播不适用（直播没有"流尾"，
+     * 断了就该按断流重连处理），所以这里直接排除。
+     */
+    private boolean tailOfStream() {
+        if (this.liveSession) return false;
+        if (this.video == null || !this.video.inputEnded()) return false;
+        return this.audio == null || this.audio.isEnded() || this.audio.inputEnded();
+    }
 
     private long chunkMs(FfmpegAudioSource.Chunk chunk) {
         int channels = this.sink.channels();
@@ -517,7 +568,7 @@ public final class MediaEngine implements AutoCloseable {
         FfmpegVideoSource v = this.video;
         if (v == null || !v.isReady() || this.wantPause) return null;
 
-        // 偏移每帧读配置：改 mediafix-ffmpeg.json 后立即生效，便于微调对齐
+        // 偏移每帧读配置：改 cineduct-ffmpeg.json 后立即生效，便于微调对齐
         FfmpegVideoSource.Frame frame = v.acquire(this.clock.timeMs() + FfmpegConfig.avOffsetMs);
         if (frame != null) {
             this.lastFrameWallMs = System.currentTimeMillis();
@@ -539,8 +590,8 @@ public final class MediaEngine implements AutoCloseable {
             long now = System.currentTimeMillis();
             if (this.starveCount == 0) this.starveFirstAt = now;
             if (++this.starveCount == 3 && now - this.starveFirstAt < 30000L) {
-                MediaFix.LOGGER.warn("[mediafix] 解码持续跟不上（30 秒内 3 次帧环空）："
-                                + "建议 /mediafix-stream quality 1080p 降一档，或把 videoFrameBufferMb 调大"
+                CineDuct.LOGGER.warn("[CineDuct] 解码持续跟不上（30 秒内 3 次帧环空）："
+                                + "建议 /cineduct-stream quality 1080p 降一档，或把 videoFrameBufferMb 调大"
                                 + "（当前解码帧缓冲 {} 帧）", v.ringSlotCount());
             }
             if (now - this.starveFirstAt > 30000L) {
@@ -572,7 +623,7 @@ public final class MediaEngine implements AutoCloseable {
             frame.releaseToSource();
         } catch (Throwable t) {
             // 源可能已彻底关闭：归还失败也不能让渲染线程跟着炸
-            MediaFix.LOGGER.warn("[mediafix] 归还视频帧异常（已忽略）", t);
+            CineDuct.LOGGER.warn("[CineDuct] 归还视频帧异常（已忽略）", t);
         }
     }
 
@@ -598,21 +649,21 @@ public final class MediaEngine implements AutoCloseable {
         Thread t = new Thread(() -> {
             FfmpegVideoSource fresh = null;
             try {
-                MediaFix.LOGGER.info("[mediafix] 无缝换链（视频）开始 -> {} @ {}ms",
-                        MediaFix.LOGGER.url(newUri), pos);
+                CineDuct.LOGGER.info("[CineDuct] 无缝换链（视频）开始 -> {} @ {}ms",
+                        CineDuct.LOGGER.url(newUri), pos);
                 fresh = new FfmpegVideoSource(newUri, this.headers);
                 fresh.setLive(this.liveSession);
                 final FfmpegVideoSource probe = fresh;
                 fresh.start();
                 if (!awaitReady(() -> probe.isReady() || probe.isBroken(), 15000L)) {
-                    MediaFix.LOGGER.warn("[mediafix] 换链放弃：新视频链 15 秒内未就绪");
+                    CineDuct.LOGGER.warn("[CineDuct] 换链放弃：新视频链 15 秒内未就绪");
                     return;
                 }
                 // 定位到"此刻正在播的位置"再等它出帧：这样切过去是连续的。
                 // 直播例外：直播流本来就没有可跳位置，打开即位于直播边缘。
                 if (!this.liveSession) fresh.requestSeek(Math.max(0L, timeMs()));
                 if (!awaitReady(() -> probe.framesProduced() > 0 || probe.isBroken(), 8000L)) {
-                    MediaFix.LOGGER.warn("[mediafix] 换链放弃：新视频链 8 秒内未解出帧");
+                    CineDuct.LOGGER.warn("[CineDuct] 换链放弃：新视频链 8 秒内未解出帧");
                     return;
                 }
                 if (this.closed) return;
@@ -626,7 +677,7 @@ public final class MediaEngine implements AutoCloseable {
                 this.lastRebufferLogAt = 0;          // 不再让 ABR 记这一次"刚缓冲见底"
                 this.diagResetBaselines = true;      // 计数器换了对象，基线要重取（否则帧率会打成负数）
                 mediafix$diagForce();     // 立刻打一条状态，便于核对
-                MediaFix.LOGGER.info("[mediafix] 无缝换链（视频）完成，旧链关闭（音频未受影响）");
+                CineDuct.LOGGER.info("[CineDuct] 无缝换链（视频）完成，旧链关闭（音频未受影响）");
                 if (old != null) {
                     try {
                         old.close();
@@ -635,7 +686,7 @@ public final class MediaEngine implements AutoCloseable {
                 }
                 fresh = null;             // 已交接，别在 finally 里关掉
             } catch (Throwable t2) {
-                MediaFix.LOGGER.warn("[mediafix] 视频换链异常", t2);
+                CineDuct.LOGGER.warn("[CineDuct] 视频换链异常", t2);
             } finally {
                 if (fresh != null) {
                     try {
@@ -645,7 +696,7 @@ public final class MediaEngine implements AutoCloseable {
                 }
                 this.videoSwapInProgress = false;
             }
-        }, "mediafix-reload-video");
+        }, "cineduct-reload-video");
         t.setDaemon(true);
         t.start();
     }
@@ -662,14 +713,14 @@ public final class MediaEngine implements AutoCloseable {
         Thread t = new Thread(() -> {
             FfmpegAudioSource fresh = null;
             try {
-                MediaFix.LOGGER.info("[mediafix] 无缝换链（音频）开始 -> {} @ {}ms",
-                        MediaFix.LOGGER.url(newUri), Math.max(0L, timeMs()));
+                CineDuct.LOGGER.info("[CineDuct] 无缝换链（音频）开始 -> {} @ {}ms",
+                        CineDuct.LOGGER.url(newUri), Math.max(0L, timeMs()));
                 int ch = this.sink.channels();
                 int rate = this.sink.sampleRate();
                 fresh = new FfmpegAudioSource(newUri, this.headers);
                 final FfmpegAudioSource probe = fresh;
                 if (!fresh.prepare()) {
-                    MediaFix.LOGGER.warn("[mediafix] 换链放弃：新音频链打开失败");
+                    CineDuct.LOGGER.warn("[CineDuct] 换链放弃：新音频链打开失败");
                     return;
                 }
                 fresh.start(Math.max(1, ch), Math.max(8000, rate));
@@ -677,14 +728,14 @@ public final class MediaEngine implements AutoCloseable {
                 if (!this.liveSession) fresh.requestSeek(Math.max(0L, timeMs()));
                 // 等它攒出一点音频再换，避免中间出现空档
                 if (!awaitReady(() -> probe.bufferedMs() > 400L || probe.isBroken(), 10000L)) {
-                    MediaFix.LOGGER.warn("[mediafix] 换链放弃：新音频链 10 秒内未攒够缓冲");
+                    CineDuct.LOGGER.warn("[CineDuct] 换链放弃：新音频链 10 秒内未攒够缓冲");
                     return;
                 }
                 if (this.closed) return;
                 FfmpegAudioSource old = this.audio;
                 this.audio = fresh;
                 this.currentAudioUri = newUri;
-                MediaFix.LOGGER.info("[mediafix] 无缝换链（音频）完成，旧链关闭");
+                CineDuct.LOGGER.info("[CineDuct] 无缝换链（音频）完成，旧链关闭");
                 if (old != null) {
                     try {
                         old.close();
@@ -693,7 +744,7 @@ public final class MediaEngine implements AutoCloseable {
                 }
                 fresh = null;
             } catch (Throwable t2) {
-                MediaFix.LOGGER.warn("[mediafix] 音频换链异常", t2);
+                CineDuct.LOGGER.warn("[CineDuct] 音频换链异常", t2);
             } finally {
                 if (fresh != null) {
                     try {
@@ -703,7 +754,7 @@ public final class MediaEngine implements AutoCloseable {
                 }
                 this.audioSwapInProgress = false;
             }
-        }, "mediafix-reload-audio");
+        }, "cineduct-reload-audio");
         t.setDaemon(true);
         t.start();
     }
@@ -758,12 +809,12 @@ public final class MediaEngine implements AutoCloseable {
              */
             if (this.video != null && this.video.framesPresented() > 0) this.video.setPaused(true);
             setState(State.PAUSED);
-            MediaFix.LOGGER.info("[mediafix] 已暂停（waterframes 的暂停/停止指令）：画面停在当前帧，音频停播");
+            CineDuct.LOGGER.info("[CineDuct] 已暂停（waterframes 的暂停/停止指令）：画面停在当前帧，音频停播");
         } else {
             if (this.video != null) this.video.setPaused(false);
             this.clock.start();
             setState(State.PLAYING);
-            MediaFix.LOGGER.info("[mediafix] 继续播放（waterframes 的播放指令）");
+            CineDuct.LOGGER.info("[CineDuct] 继续播放（waterframes 的播放指令）");
         }
     }
 
@@ -795,7 +846,7 @@ public final class MediaEngine implements AutoCloseable {
             long now = System.currentTimeMillis();
             if (now - this.lastLiveSeekLogAt > 10_000L) {
                 this.lastLiveSeekLogAt = now;
-                MediaFix.LOGGER.info("[mediafix] 直播：忽略一次 seek -> {}ms（直播没有可跳位置）", ms);
+                CineDuct.LOGGER.info("[CineDuct] 直播：忽略一次 seek -> {}ms（直播没有可跳位置）", ms);
             }
             return;
         }
@@ -814,13 +865,13 @@ public final class MediaEngine implements AutoCloseable {
          */
         long cur = timeMs();
         if (this.video != null && cur > 2000L
-                && Math.abs(target - cur) < dev.mediafix.config.SeekGuardConfig.noopToleranceMs) {
+                && Math.abs(target - cur) < StreamConfig.noopSeekToleranceMs) {
             long nowMs = System.currentTimeMillis();
             this.ignoredSeekCount++;
             if (nowMs - this.lastNoopSeekLogAt > 3000L) {
                 this.lastNoopSeekLogAt = nowMs;
-                MediaFix.LOGGER.info("[mediafix] 忽略一次原地 seek：目标 {}ms，当前 {}ms（差 {}ms，容差 {}ms）",
-                        target, cur, target - cur, dev.mediafix.config.SeekGuardConfig.noopToleranceMs);
+                CineDuct.LOGGER.info("[CineDuct] 忽略一次原地 seek：目标 {}ms，当前 {}ms（差 {}ms，容差 {}ms）",
+                        target, cur, target - cur, StreamConfig.noopSeekToleranceMs);
             }
             return;
         }
@@ -837,7 +888,7 @@ public final class MediaEngine implements AutoCloseable {
             this.seekBurstSince = now;
             this.seekBurstCount = 1;
         } else if (++this.seekBurstCount == 4) {
-            MediaFix.LOGGER.warn("[mediafix] seek 风暴：2 秒内被反复 seek {} 次（目标 {}ms，时钟 {}ms，状态 {}）"
+            CineDuct.LOGGER.warn("[CineDuct] seek 风暴：2 秒内被反复 seek {} 次（目标 {}ms，时钟 {}ms，状态 {}）"
                             + " —— 多半是服务端进度同步/拖动进度条在连续下发；只有持续十几秒不消停才说明纠偏在和我们互追",
                     this.seekBurstCount, target, timeMs(), this.state);
         }
@@ -859,7 +910,7 @@ public final class MediaEngine implements AutoCloseable {
             this.lastFedPts = -1;
             this.video.requestSkipTo(target);
             this.catchUpCount++;
-            MediaFix.LOGGER.info("[mediafix] 快速追帧 -> {}ms（向前 {}ms：在预读里丢弃，不重开连接）",
+            CineDuct.LOGGER.info("[CineDuct] 快速追帧 -> {}ms（向前 {}ms：在预读里丢弃，不重开连接）",
                     target, target - cur);
             return;
         }
@@ -871,10 +922,35 @@ public final class MediaEngine implements AutoCloseable {
         // 等音频追上时再往回跳。所以先冻结时钟，缓冲回来再恢复（见 feedLoop）。
         this.clock.pause();
         this.sink.flush();
+        /*
+         * ★★ 手里那块音频必须**交还并丢掉**（2026-10-06 修，直播那头是另一回事，这条是点播）。
+         *
+         * <p>现场（引擎日志，从片尾跳回开头那次）：
+         * <pre>
+         *   seek -> 0ms
+         *   400ms 后「状态=PLAYING 但时钟没在走：重新启动时钟（时钟=59362ms）」
+         *   「视频与时钟差=-57996ms」→ 画面里每一帧都成了过期帧被丢光 → 帧环空
+         *   → 引擎判成卡顿/饥饿 → 反复校准（seek 2002ms → … 一直循环）
+         * </pre>
+         *
+         * <p>成因：{@code FfmpegAudioSource.requestSeek} 作废环形缓冲时**刻意保留 SHOWING 那一槽**
+         * （那个槽已经交给引擎了），于是引擎手里这块属于【seek 之前位置】的音频照写不误；
+         * 写完 {@code update()} 就把时钟重新锚回旧位置 —— 而画面已经跳到新位置，
+         * 两边整整差一个跳转量。不归还还会漏槽位（音频源那边注释里记过同一类事故）。
+         */
+        if (this.pendingChunk != null) {
+            this.audio.release(this.pendingChunk);
+            this.pendingChunk = null;
+        }
+        this.lastFedPts = -1;
+        // 目标之前的旧块一律不写声卡（向前跳靠它清尾；向后跳它自然不命中，无害）
+        this.audioSkipUntilMs = target;
+        // 代次：正在 poll 途中的那一块也算“seek 之前”，feedLoop 里对不上就丢掉
+        this.seekEpoch++;
         if (this.video != null) this.video.requestSeek(target);
         if (this.audio != null) this.audio.requestSeek(target);
         this.lastFrameWallMs = System.currentTimeMillis();
-        MediaFix.LOGGER.info("[mediafix] seek -> {}ms (冻结时钟，等待缓冲重填)", target);
+        CineDuct.LOGGER.info("[CineDuct] seek -> {}ms (冻结时钟，等待缓冲重填)", target);
         setState(this.wantPause ? State.PAUSED : State.BUFFERING);
     }
 
@@ -946,7 +1022,7 @@ public final class MediaEngine implements AutoCloseable {
         if (fresh == null || fresh[0] == null || fresh[1] == null) {
             return false;
         }
-        MediaFix.LOGGER.info("[mediafix] 手动刷新：拿到新鲜直链，开始无缝换链（视频+音频）");
+        CineDuct.LOGGER.info("[CineDuct] 手动刷新：拿到新鲜直链，开始无缝换链（视频+音频）");
         reloadVideoSource(URI.create(fresh[0]));
         reloadAudioSource(URI.create(fresh[1]));
         return true;
@@ -975,6 +1051,44 @@ public final class MediaEngine implements AutoCloseable {
     public void setVolumePercent(int percent) {
         this.volumePercent = Math.max(0, Math.min(100, percent));
         this.sink.setGain(this.volumePercent / 100f);
+    }
+
+    /**
+     * 把"建引擎之前 waterframes 已经设好的"播放设置补上。
+     *
+     * <p>waterframes 的 {@code switchVideoMode()} 是【先设音量/静音/暂停/循环，最后才 start(uri)】，
+     * 而这些调用发生在我们建引擎之前 —— 那时候桥接层拿不到引擎，设置就丢了。
+     * 不补这一下，新引擎永远用默认音量 100% 起播，**投影仪的音量距离设置（最小/最大距离）整个失效**：
+     * 只要进了渲染范围就是满音量。详见 {@code dev.mediafix.bridge.PendingPlayerSettings}。
+     *
+     * @param volumePercent0 距离衰减后的音量（0~100）；null = 没设过，保持默认
+     * @param muted0         是否静音；null = 没设过
+     * @param paused0        是否暂停；null = 没设过
+     * @param repeat0        是否循环；null = 没设过
+     */
+    public void applyPendingSettings(Integer volumePercent0, Boolean muted0, Boolean paused0, Boolean repeat0) {
+        boolean any = false;
+        if (volumePercent0 != null) {
+            setVolumePercent(volumePercent0);
+            any = true;
+        }
+        if (muted0 != null) {
+            setMuted(muted0);
+            any = true;
+        }
+        if (repeat0 != null) {
+            setRepeat(repeat0);
+            any = true;
+        }
+        // 暂停放最后：它会把状态置成 PAUSED，前面的设置照旧生效
+        if (paused0 != null && paused0 != this.wantPause) {
+            pause(paused0);
+            any = true;
+        }
+        if (any) {
+            CineDuct.LOGGER.info("[CineDuct] 引擎接手播放设置: 音量={}% 静音={} 暂停={} 循环={}",
+                    this.volumePercent, this.sink.isMuted(), this.wantPause, this.repeat);
+        }
     }
 
     public void setMuted(boolean muted) {
@@ -1014,7 +1128,7 @@ public final class MediaEngine implements AutoCloseable {
         if (next == State.LOADING) this.loadingSince = now;
         if (now - this.lastStateLogAt < 400L) return;   // 抖动时别刷屏
         this.lastStateLogAt = now;
-        MediaFix.LOGGER.info("[mediafix][状态] {} -> {}{} | 时钟={}ms 待播={}ms 音频环={}ms 提前量={}ms 门限={}ms 帧环={}",
+        CineDuct.LOGGER.info("[CineDuct][状态] {} -> {}{} | 时钟={}ms 待播={}ms 音频环={}ms 提前量={}ms 门限={}ms 帧环={}",
                 prev, next, reason == null ? "" : " (" + reason + ")",
                 timeMs(), this.sink.pendingMs(),
                 this.audio == null ? -1L : this.audio.bufferedMs(), audioLeadMs(), audioGateMs(),
@@ -1195,7 +1309,7 @@ public final class MediaEngine implements AutoCloseable {
         return this.sink.channels();
     }
 
-    /** 音频链摘要（给 /mediafix audio 用）：源编码/声道/采样率 → 输出声道/采样率。 */
+    /** 音频链摘要（给 /cineduct audio 用）：源编码/声道/采样率 → 输出声道/采样率。 */
     public String audioSummary() {
         FfmpegAudioSource a = this.audio;
         if (a == null) {
@@ -1236,12 +1350,12 @@ public final class MediaEngine implements AutoCloseable {
         liveReconnectTick();
         if (!FfmpegConfig.verbose && this.diagCount++ > 400) return;   // 非 verbose 打约 13 分钟
         if (this.liveSession) {
-            MediaFix.LOGGER.diag("[mediafix][直播] 时间轴={}ms（开播以来）实时延迟={}ms 锚点={}ms | 原始PTS={}ms 系统时间={}ms",
+            CineDuct.LOGGER.diag("[CineDuct][直播] 时间轴={}ms（开播以来）实时延迟={}ms 锚点={}ms | 原始PTS={}ms 系统时间={}ms",
                     liveElapsedMs(), liveLatencyMs(), this.liveAnchorMs, timeMs(),
                     System.currentTimeMillis() + this.liveAnchorMs);
         }
-        MediaFix.LOGGER.diag("[mediafix][引擎] 状态={} 时钟={}ms 时长={}ms 暂停意图={} 视频:就绪={} 坏={} 解出={}帧 已显示={}帧 归还入={} 已归还={} 丢帧={} 帧队列={} 预读={}KB 末帧PTS={} 音频:就绪={} 待播={}ms 音频环={}ms 门限={}ms 提前量={}ms",
-                this.state, timeMs(), durationMs(), this.wantPause,
+        CineDuct.LOGGER.diag("[CineDuct][引擎] 状态={} 时钟={}ms 时长={}ms 暂停意图={} 音量={}% 静音={} 视频:就绪={} 坏={} 解出={}帧 已显示={}帧 归还入={} 已归还={} 丢帧={} 帧队列={} 预读={}KB 末帧PTS={} 音频:就绪={} 待播={}ms 音频环={}ms 门限={}ms 提前量={}ms",
+                this.state, timeMs(), durationMs(), this.wantPause, this.volumePercent, this.sink.isMuted(),
                 this.video != null && this.video.isReady(), this.video != null && this.video.isBroken(),
                 this.video != null ? this.video.framesProduced() : -1,
                 this.video != null ? this.video.framesPresented() : -1,
@@ -1274,21 +1388,21 @@ public final class MediaEngine implements AutoCloseable {
         this.diagLastCalls = calls;
         this.diagLastShown = shown;
         this.diagLastAt = now;
-        MediaFix.LOGGER.diag("[mediafix][帧率] 取帧调用={}/秒 实际显示={}/秒 {}",
+        CineDuct.LOGGER.diag("[CineDuct][帧率] 取帧调用={}/秒 实际显示={}/秒 {}",
                 callsPerSec, shownPerSec,
                 callsPerSec < 40 ? "← 渲染线程根本没在频繁调用（画面没在渲染？）"
                         : shownPerSec < callsPerSec / 2 ? "← 调用了但我没给帧（看[取帧]原因）" : "← 正常");
-        MediaFix.LOGGER.diag("[mediafix][内存] 解码帧缓冲={}MB({}帧) 压缩预读={}MB 音频环={}MB | 本机原生内存合计≈{}MB",
+        CineDuct.LOGGER.diag("[CineDuct][内存] 解码帧缓冲={}MB({}帧) 压缩预读={}MB 音频环={}MB | 本机原生内存合计≈{}MB",
                 mb(this.video == null ? 0L : this.video.ringBytesTotal()),
                 this.video == null ? 0 : this.video.ringSlotCount(),
                 mb(this.video == null ? 0L : this.video.bufferedBytes()),
                 mb(this.audio == null ? 0L : this.audio.ringBytesTotal()),
                 mb((this.video == null ? 0L : this.video.ringBytesTotal() + this.video.bufferedBytes())
                         + (this.audio == null ? 0L : this.audio.ringBytesTotal())));
-        MediaFix.LOGGER.diag("[mediafix][时钟] 速率={} 残差={}ms | 视频与时钟差={}ms",
+        CineDuct.LOGGER.diag("[CineDuct][时钟] 速率={} 残差={}ms | 视频与时钟差={}ms",
                 String.format("%.3f", this.clock.speed()), this.clock.residualMs(),
                 this.video == null ? 0L : this.video.lastPresentedPtsMs() - timeMs());
-        MediaFix.LOGGER.diag("[mediafix][耗时] 解码={}ms 搬运={}ms 转换={}ms 帧数={} → 每帧 {}+{}+{}={}ms | 声卡欠载={} 截断={} 爆音={} 去咔={} 重采样不一致={}",
+        CineDuct.LOGGER.diag("[CineDuct][耗时] 解码={}ms 搬运={}ms 转换={}ms 帧数={} → 每帧 {}+{}+{}={}ms | 声卡欠载={} 截断={} 爆音={} 去咔={} 重采样不一致={}",
                 st == null ? -1 : st[0] / Math.max(1, st[3]), st == null ? -1 : st[1] / Math.max(1, st[3]),
                 st == null ? -1 : st[2] / Math.max(1, st[3]), frames,
                 st == null ? -1 : st[0] / frames, st == null ? -1 : st[1] / frames,
@@ -1341,7 +1455,7 @@ public final class MediaEngine implements AutoCloseable {
 
     /**
      * ABR 心跳（跟随两秒一次的诊断一起跑）：喂带宽采样 → 让控制器决策 → 需要就换档。
-     * 只在 {@code maxQn == -1}（/mediafix-stream quality auto）时工作；手动指定档位时绝不干预。
+     * 只在 {@code maxQn == -1}（/cineduct-stream quality auto）时工作；手动指定档位时绝不干预。
      */
     /**
      * 直播断流重连。
@@ -1359,7 +1473,7 @@ public final class MediaEngine implements AutoCloseable {
         boolean aCut = this.audio != null && (this.audio.isBroken() || this.audio.isEnded());
         if (!vCut && !aCut) return;
         this.lastLiveReconnectAt = now;
-        MediaFix.LOGGER.warn("[mediafix] 直播断流（视频坏={} 播完={} 音频坏={}）：重新取链重连（延迟 {}ms）",
+        CineDuct.LOGGER.warn("[CineDuct] 直播断流（视频坏={} 播完={} 音频坏={}）：重新取链重连（延迟 {}ms）",
                 this.video.isBroken(), this.video.isEnded(),
                 this.audio != null && this.audio.isBroken(), liveLatencyMs());
         String[] fresh = dev.mediafix.proxy.DashResolver.reResolveUrls();
@@ -1367,7 +1481,7 @@ public final class MediaEngine implements AutoCloseable {
             // 主播下播时也会走到这里（接口报未开播）——失败日志限流，别每 5 秒刷一行
             if (now - this.lastLiveFailLogAt > 30_000L) {
                 this.lastLiveFailLogAt = now;
-                MediaFix.LOGGER.warn("[mediafix] 直播重连没成功（可能已下播或需要权限），稍后自动再试");
+                CineDuct.LOGGER.warn("[CineDuct] 直播重连没成功（可能已下播或需要权限），稍后自动再试");
             }
             return;
         }
@@ -1391,7 +1505,7 @@ public final class MediaEngine implements AutoCloseable {
         AbrLadder.Candidate next = dir < 0 ? AbrLadder.lower() : AbrLadder.higher();
         if (next == null) return;
         AbrLadder.setCurrentIndex(AbrLadder.currentIndex() + dir);
-        MediaFix.LOGGER.info("[mediafix] ABR 换档（仅视频）-> {}（{}kbps）", next.label(), next.bandwidthBps() / 1000);
+        CineDuct.LOGGER.info("[CineDuct] ABR 换档（仅视频）-> {}（{}kbps）", next.label(), next.bandwidthBps() / 1000);
         /*
          * 只换视频链。音频【不参与自适应】：它始终是解析时取得的最高音质那一条，
          * 换档期间音频链、声卡、时钟全程不动，所以不会有"短暂重开"，声音也不会跟着降级。
@@ -1419,10 +1533,10 @@ public final class MediaEngine implements AutoCloseable {
         long now = System.currentTimeMillis();
         if (now - this.lastRefreshAt < 60_000L) return;      // 失败后至少隔一分钟再试
         this.lastRefreshAt = now;
-        MediaFix.LOGGER.info("[mediafix] 直链将在 {} 秒后过期，主动续期换链", leftMs / 1000);
+        CineDuct.LOGGER.info("[CineDuct] 直链将在 {} 秒后过期，主动续期换链", leftMs / 1000);
         String[] fresh = dev.mediafix.proxy.DashResolver.reResolveUrls();
         if (fresh == null) {
-            MediaFix.LOGGER.warn("[mediafix] 直链续期没成功，播放可能在到期后中断");
+            CineDuct.LOGGER.warn("[CineDuct] 直链续期没成功，播放可能在到期后中断");
             return;
         }
         reloadVideoSource(URI.create(fresh[0]));
@@ -1461,7 +1575,7 @@ public final class MediaEngine implements AutoCloseable {
         if ((videoReady && audioReady) || (videoDead && audioReady) || (videoReady && audioDead)) {
             // 先缓冲够再开播：水帧那边也会因此多显示一会儿"加载中"，而不是一上来就断续
             if (!audioPrebuffered()) return;
-            MediaFix.LOGGER.info("[mediafix] 预缓冲完成: 音频 {}ms (目标 {}ms)",
+            CineDuct.LOGGER.info("[CineDuct] 预缓冲完成: 音频 {}ms (目标 {}ms)",
                     this.sink.pendingMs(), FfmpegConfig.prebufferMs);
             this.clock.start();
             setState(this.wantPause ? State.PAUSED : State.PLAYING);
@@ -1487,10 +1601,19 @@ public final class MediaEngine implements AutoCloseable {
          */
         boolean starvedAtEnd = System.currentTimeMillis() - this.lastFrameWallMs > 8000L
                 && this.video != null && this.video.bufferedBytes() <= 0L;
-        if (!isEnded() && !starvedAtEnd) return;
+        /*
+         * ★ 更早、也更准的一条：**解复用已经读到流尾**（两条链都到）。
+         *
+         * <p>上面那条 8 秒的兜底是给"isEnded() 永远不真"擦屁股的（它自己的注释里写了这个实测），
+         * 代价是片尾要白等 8 秒：这 8 秒里预读见底会被判成"缓冲见底/音频欠载"→ BUFFERING →
+         * 看着就是"放完了却卡住"，循环播放还得再拖 8 秒才回卷。
+         * 现在 Demux 一到尾就认，不必等满 8 秒（下面 `timeMs() >= dur - 1000` 的保护还在，
+         * 所以不会提前判结束）。
+         */
+        if (!isEnded() && !starvedAtEnd && !tailOfStream()) return;
 
         if (this.repeat) {
-            MediaFix.LOGGER.info("[mediafix] 播放结束，循环回起点");
+            CineDuct.LOGGER.info("[CineDuct] 播放结束，循环回起点");
             seek(0L);
             pause(false);
             return;
@@ -1498,7 +1621,7 @@ public final class MediaEngine implements AutoCloseable {
         if (this.state != State.ENDED) {
             setState(State.ENDED);
             this.rebufferHold = false;
-            MediaFix.LOGGER.info("[mediafix] 播放结束（时长 {}ms）", dur);
+            CineDuct.LOGGER.info("[CineDuct] 播放结束（时长 {}ms）", dur);
         }
     }
 
@@ -1517,7 +1640,7 @@ public final class MediaEngine implements AutoCloseable {
                 Thread.currentThread().interrupt();
             }
             if (boot.isAlive()) {
-                MediaFix.LOGGER.warn("[mediafix] 引擎启动线程未在 5 秒内退出，跳过原生资源释放以避免崩溃");
+                CineDuct.LOGGER.warn("[CineDuct] 引擎启动线程未在 5 秒内退出，跳过原生资源释放以避免崩溃");
                 this.sink.close();   // 纯 Java 的输出可以安全关闭
                 return;
             }
@@ -1549,6 +1672,6 @@ public final class MediaEngine implements AutoCloseable {
                 }
             }
         }
-        MediaFix.LOGGER.info("[mediafix] 引擎已关闭");
+        CineDuct.LOGGER.info("[CineDuct] 引擎已关闭");
     }
 }

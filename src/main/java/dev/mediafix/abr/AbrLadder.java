@@ -18,7 +18,7 @@ public final class AbrLadder {
 
     /**
      * 一个可选清晰度。
-     * @param qn            B 站清晰度编号（120=4K …）
+     * @param qn            B 站清晰度编号（120=4K、127=8K …）
      * @param bandwidthBps  码率（bps），ABR 的决策依据
      * @param url           直链
      * @param label         展示名（清晰度 + 编码）

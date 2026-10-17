@@ -1,6 +1,6 @@
 package dev.mediafix.config;
 
-import dev.mediafix.MediaFix;
+import dev.mediafix.CineDuct;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -61,12 +61,12 @@ public final class CookieHarden {
                 Process proc = pb.start();
                 int exit = proc.waitFor();
                 if (exit == 0) {
-                    MediaFix.LOGGER.info("[mediafix] 已收紧 Cookie 文件权限: {}", p);
+                    CineDuct.LOGGER.info("[CineDuct] 已收紧 Cookie 文件权限: {}", p);
                 } else {
-                    MediaFix.LOGGER.warn("[mediafix] icacls 限权失败(exit={}): {}", exit, p);
+                    CineDuct.LOGGER.warn("[CineDuct] icacls 限权失败(exit={}): {}", exit, p);
                 }
             } catch (Exception e) {
-                MediaFix.LOGGER.warn("[mediafix] 执行 icacls 限权异常: {}", p, e);
+                CineDuct.LOGGER.warn("[CineDuct] 执行 icacls 限权异常: {}", p, e);
             }
         }
         hardened = true;
