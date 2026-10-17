@@ -11,8 +11,8 @@
 
 ### 这是什么
 
-**CineDuct API** 是一个独立的 Minecraft 视频模组（`modid = cineduct`）：在游戏里放一块屏幕、贴个链接就能播，
-同时把播放能力开放给其它模组（`dev.mediafix.api`）。
+**CineDuct API** 是一个独立的 Minecraft 视频模组：在游戏里放一块屏幕、贴个链接就能播，
+同时把播放能力开放给其它模组。
 
 - **不依赖任何前置模组**：解析、解码、音频输出、渲染、时钟全部自研。
 - **只做流式直连**：B 站视频/音频是两条 DASH 直链，边下边播，**不下载、不落盘、不留缓存文件**。
@@ -187,8 +187,8 @@ C++ 子进程（`native/host`、`native/glshim`）需要 MSVC + CMake，`native/
 
 ### What it is
 
-**CineDuct API** is a standalone Minecraft video mod (`modid = cineduct`): place a screen in the world,
-paste a link, and it plays — while exposing the playback engine to other mods (`dev.mediafix.api`).
+**CineDuct API** is a standalone Minecraft video mod : place a screen in the world,
+paste a link, and it plays — while exposing the playback engine to other mods.
 
 - **No dependencies**: resolution, decoding, audio output, rendering and clocking are all built in.
 - **Streaming only**: Bilibili video/audio are two DASH streams, played as they download — **nothing is saved to disk or cached**.
