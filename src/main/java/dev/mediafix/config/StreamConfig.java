@@ -48,6 +48,14 @@ public final class StreamConfig {
     }
 
     /**
+     * 直播清晰度（B 站直播 qn，和点播的 {@link #maxQn} 是两套体系）。
+     *
+     * <p>10000=原画、400=蓝光、250=超清、150=高清、80=流畅。
+     * 直播间实际能出哪些档位由主播推流决定；选到不支持的档位时 B 站会自动回落到可用档位。
+     */
+    public static int liveQn = 10000;
+
+    /**
      * DASH 流式直连（不下载）：B 站的视频/音频是两条独立 fMP4 直链，
      * 打开本开关后直接把视频链交给 FFmpeg、音频链交给 VLC，边下边播、不落盘。
      * 需要 FFmpeg 原生库可用；不满足则交回前置模组处理。
@@ -104,6 +112,7 @@ public final class StreamConfig {
                 if (map != null) {
                     if (map.get("highres") instanceof Boolean h) highres = h;
                     if (map.get("maxQn") instanceof Number n) maxQn = n.intValue();
+                    if (map.get("liveQn") instanceof Number n) liveQn = n.intValue();
                     if (map.get("dashStreaming") instanceof Boolean b) dashStreaming = b;
                     if (map.get("avoidAv1") instanceof Boolean b) avoidAv1 = b;
                     if (map.get("streamOffsetMs") instanceof Number n) streamOffsetMs = n.intValue();
@@ -123,6 +132,7 @@ public final class StreamConfig {
             Map<String, Object> map = new HashMap<>();
             map.put("highres", highres);
             map.put("maxQn", maxQn);
+            map.put("liveQn", liveQn);
             map.put("dashStreaming", dashStreaming);
             map.put("avoidAv1", avoidAv1);
             map.put("streamOffsetMs", streamOffsetMs);

@@ -29,6 +29,18 @@
   "cineduct.sodium.quality.tooltip.8k": "8K. Bilibili mostly offers AV1 only, which nearly every GPU has to decode in software, so expect heavy stutter.",
   "cineduct.sodium.quality.tooltip.unlimited": "No cap: use the highest quality your account can get. Meant for Premium users on strong hardware.",
 
+  "cineduct.sodium.live_quality.name": "Live Quality",
+  "cineduct.sodium.live_quality.origin": "Original",
+  "cineduct.sodium.live_quality.bluray": "Blu-ray",
+  "cineduct.sodium.live_quality.ultra": "Ultra",
+  "cineduct.sodium.live_quality.high": "High",
+  "cineduct.sodium.live_quality.smooth": "Smooth",
+  "cineduct.sodium.live_quality.tooltip.origin": "The streamer's highest push quality, and Bilibili Live's default tier.",
+  "cineduct.sodium.live_quality.tooltip.bluray": "1080p at a higher bitrate; only rooms that offer this transcode have it, otherwise it falls back automatically.",
+  "cineduct.sodium.live_quality.tooltip.ultra": "Around 720p, with noticeably lower bandwidth.",
+  "cineduct.sodium.live_quality.tooltip.high": "Around 480p; for poor connections.",
+  "cineduct.sodium.live_quality.tooltip.smooth": "The lowest tier, lightest on bandwidth.",
+
   "cineduct.sodium.zero_copy.name": "Zero-copy Subprocess",
   "cineduct.sodium.zero_copy.tooltip": "Hands playback to a C++ subprocess: frames are decoded in the subprocess and bound straight as the GL texture through a DXGI shared texture (no CPU read-back), with audio going out via WASAPI. It does not conflict with In-process HW Decode: that path also decodes in hardware, it just copies frames back. Falls back to the in-process engine when unavailable. Experimental, off by default; applies to videos afterwards.",
 
@@ -49,6 +61,10 @@
   "cineduct.sodium.av_offset.name": "A/V Sync Offset",
   "cineduct.sodium.av_offset.tooltip": "Sound reaches your ears through HDMI, a receiver or a soundbar, so the picture tends to run ahead. Use positive values when the picture is fast and negative values when it lags, and adjust until they line up. Press Apply to affect the playing video immediately.",
   "cineduct.sodium.av_offset.value": "%s ms",
+
+  "cineduct.sodium.max_delay.name": "Max Server Sync Delay",
+  "cineduct.sodium.max_delay.tooltip": "When the server syncs progress, if its target is ahead of your position by no more than this many seconds, playback fast-forwards inside already-buffered data (no reconnect, no buffer flush); beyond that it performs a real seek. Larger values reduce stutter, smaller values track the server more strictly. 0 still keeps a 1-second floor.",
+  "cineduct.sodium.max_delay.value": "%s s",
 
   "cineduct.login.title": "Bilibili Account",
   "cineduct.login.querying": "Checking sign-in status...",

@@ -29,6 +29,18 @@
   "cineduct.sodium.quality.tooltip.8k": "8K。B 站基本只提供 AV1 编码，绝大多数显卡只能软解，通常会非常卡。",
   "cineduct.sodium.quality.tooltip.unlimited": "不设上限：直接用账号权限里能拿到的最高清晰度。大会员 + 高配机器可以选这个。",
 
+  "cineduct.sodium.live_quality.name": "直播清晰度",
+  "cineduct.sodium.live_quality.origin": "原画",
+  "cineduct.sodium.live_quality.bluray": "蓝光",
+  "cineduct.sodium.live_quality.ultra": "超清",
+  "cineduct.sodium.live_quality.high": "高清",
+  "cineduct.sodium.live_quality.smooth": "流畅",
+  "cineduct.sodium.live_quality.tooltip.origin": "主播推流的最高画质，也是 B 站直播的默认档。",
+  "cineduct.sodium.live_quality.tooltip.bluray": "1080P 高码率；只有提供了这档转码的直播间才可选，否则自动回落。",
+  "cineduct.sodium.live_quality.tooltip.ultra": "约 720P，带宽占用明显更低。",
+  "cineduct.sodium.live_quality.tooltip.high": "约 480P，网络较差时用。",
+  "cineduct.sodium.live_quality.tooltip.smooth": "最低档，最省带宽。",
+
   "cineduct.sodium.zero_copy.name": "零拷贝子进程",
   "cineduct.sodium.zero_copy.tooltip": "交给独立的 C++ 子进程播放：帧硬解后经 DXGI 共享纹理零拷贝绑成 GL 纹理，不做 CPU 回读；音频走 WASAPI 直出。与「进程内硬解」不冲突 —— 那条同样硬解，只是要搬帧。不可用时自动回退，不会没画面。实验性，默认关闭；对之后打开的视频生效。",
 
@@ -49,6 +61,10 @@
   "cineduct.sodium.av_offset.name": "音画同步偏移",
   "cineduct.sodium.av_offset.tooltip": "声音要经过 HDMI → 功放/回音壁才到耳朵，画面看起来会跑在前面。画面比声音快就调正值，慢就调负值，看到对上为止。拖动后点「应用」立刻对正在播放的视频生效，不用重启。",
   "cineduct.sodium.av_offset.value": "%s ms",
+
+  "cineduct.sodium.max_delay.name": "与服务端校验的最大延迟",
+  "cineduct.sodium.max_delay.tooltip": "服务端每次同步进度时，如果目标位置比你当前超前不超过这个秒数，就在已预读的码流里直接快进（不重开连接、不清空缓冲）；超过这个值才做真正的 seek。调大能减少卡顿，调小更严格地跟服务端。0 时仍保留 1 秒下限。",
+  "cineduct.sodium.max_delay.value": "%s 秒",
 
   "cineduct.login.title": "B 站账号登录",
   "cineduct.login.querying": "正在查询登录状态…",

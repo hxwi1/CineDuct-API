@@ -49,7 +49,7 @@
 **设置界面（Sodium 集成）**
 
 - 装了 [Sodium](https://github.com/CaffeineMC/sodium)（0.8.13+，需其公开配置 API）后，「视频设置」里会出现 **CineDuct API** 页：
-  清晰度、零拷贝子进程、进程内硬解、避开 AV1、音轨偏好、音画同步，以及**账号登录**入口。
+  清晰度、直播清晰度、零拷贝子进程、进程内硬解、避开 AV1、音轨偏好、音画同步、与服务端校验的最大延迟，以及**账号登录**入口。
 - 中英双语；所有选项都走 Sodium 的配置 API 注册（**不注入、不 Mixin**）。
 
 **屏幕与对外 API**
@@ -229,8 +229,8 @@ paste a link, and it plays — while exposing the playback engine to other mods.
 **Settings UI (Sodium integration)**
 
 - With [Sodium](https://github.com/CaffeineMC/sodium) 0.8.13+ (public config API), a **CineDuct API** page appears in
-  Video Settings: quality, zero-copy subprocess, in-process hardware decode, avoid AV1, preferred audio track,
-  A/V sync offset, and the account sign-in entry.
+  Video Settings: quality, live quality, zero-copy subprocess, in-process hardware decode, avoid AV1, preferred
+  audio track, A/V sync offset, max server sync delay, and the account sign-in entry.
 - Bilingual (Chinese / English); registered purely through Sodium's public API — **no injection, no mixins**.
 
 **Screens and API**

@@ -110,6 +110,8 @@ public final class CineDuctSodiumConfig implements ConfigEntryPoint {
                 .setName(text("cineduct.sodium.group.quality", "画质与解码"));
 
         group.addOption(this.buildQualityOption(builder));
+        // 直播清晰度紧跟在点播清晰度下面（两套档位是不同的体系，放一起便于对照）
+        group.addOption(this.buildLiveQualityOption(builder));
 
         /*
          * 零拷贝子进程（gpuHostEnabled）。
@@ -213,6 +215,28 @@ public final class CineDuctSodiumConfig implements ConfigEntryPoint {
                 .setApplyHook(state -> pushAvOffsetToLiveSessions())
                 .setImpact(OptionImpact.LOW));
 
+        /*
+         * 与服务端校验的最大延迟（秒）→ StreamConfig.catchUpMaxMs。
+         *
+         * 服务端按 tick 进度纠偏；目标比当前超前不超过这个值时，引擎在已预读的码流里"就地快进"
+         * （不重开连接、不清空缓冲），超过才做真 seek（见 MediaEngine 的 seek 分支）。
+         * 引擎里保留了 1 秒下限（Math.max(1000, catchUpMaxMs)），所以 0 等于"尽量走真 seek"。
+         */
+        group.addOption(builder.createIntegerOption(id("max_sync_delay"))
+                .setName(text("cineduct.sodium.max_delay.name", "与服务端校验的最大延迟"))
+                .setTooltip(seconds -> text("cineduct.sodium.max_delay.tooltip",
+                        "服务端每次同步进度时，如果目标位置比你当前超前不超过这个秒数，就在已预读的码流里"
+                                + "直接快进（不重开连接、不清空缓冲）；超过这个值才做真正的 seek。"
+                                + "调大能减少卡顿，调小更严格地跟服务端。0 时仍保留 1 秒下限。"))
+                .setStorageHandler(STORAGE)
+                .setRange(0, 30, 1)
+                .setDefaultValue(8)
+                .setValueFormatter(seconds -> text("cineduct.sodium.max_delay.value", "%s 秒", seconds))
+                .setBinding(
+                        v -> StreamConfig.catchUpMaxMs = v * 1000,
+                        () -> Math.round(StreamConfig.catchUpMaxMs / 1000.0f))
+                .setImpact(OptionImpact.LOW));
+
         return group;
     }
 
@@ -235,6 +259,25 @@ public final class CineDuctSodiumConfig implements ConfigEntryPoint {
                         v -> StreamConfig.maxQn = v.qn,
                         () -> Quality.fromQn(StreamConfig.maxQn))
                 .setImpact(OptionImpact.VARIES);
+    }
+
+    /**
+     * 直播清晰度（B 站直播 qn）。
+     *
+     * <p>放在点播「清晰度」的下面一项，但两者是独立配置：点播有 ABR 与账号权限收窄，
+     * 直播是固定档位（切档必须断流重连），实际可用档位由主播推流决定。
+     */
+    private EnumOptionBuilder<LiveQuality> buildLiveQualityOption(ConfigBuilder builder) {
+        return builder.createEnumOption(id("live_quality"), LiveQuality.class)
+                .setName(text("cineduct.sodium.live_quality.name", "直播清晰度"))
+                .setTooltip(value -> text("cineduct.sodium.live_quality.tooltip." + value.key, value.tooltip))
+                .setElementNameProvider(value -> text("cineduct.sodium.live_quality." + value.key, value.label))
+                .setStorageHandler(STORAGE)
+                .setDefaultValue(LiveQuality.ORIGIN)
+                .setBinding(
+                        v -> StreamConfig.liveQn = v.qn,
+                        () -> LiveQuality.fromQn(StreamConfig.liveQn))
+                .setImpact(OptionImpact.LOW);
     }
 
     // ------------------------------------------------------------------
@@ -337,8 +380,56 @@ public final class CineDuctSodiumConfig implements ConfigEntryPoint {
     }
 
     // ==================================================================
-    // 枚举：B 站清晰度（qn）与音轨偏好
+    // 枚举：B 站清晰度（点播 / 直播）与音轨偏好
     // ==================================================================
+
+    /**
+     * B 站直播清晰度档位（qn）。
+     *
+     * <p>与点播的 {@link Quality} 是两套体系：直播只有这几档固定值，切档必须断流重连，
+     * 而且实际能出哪几档取决于主播推流（选到不支持的档位时 B 站会自动回落到可用档位）。
+     *
+     * <p>枚举常量<b>按从高到低声明</b>：默认档是「原画」，玩家点一下自然是往下降一档；
+     * 从最低档再点一下会回到原画（Sodium 的轮换控件按 enum 顺序循环）。
+     */
+    public enum LiveQuality {
+        ORIGIN(10000, "origin", "原画",
+                "主播推流的最高画质，也是 B 站直播的默认档。"),
+        BLURAY(400, "bluray", "蓝光",
+                "1080P 高码率；只有提供了这档转码的直播间才可选，否则自动回落。"),
+        ULTRA(250, "ultra", "超清",
+                "约 720P，带宽占用明显更低。"),
+        HIGH(150, "high", "高清",
+                "约 480P，网络较差时用。"),
+        SMOOTH(80, "smooth", "流畅",
+                "最低档，最省带宽。");
+
+        /** B 站直播接口里的清晰度编号。 */
+        final int qn;
+        /** 翻译键后缀。 */
+        final String key;
+        /** 中文显示名（语言文件缺失时的兜底）。 */
+        final String label;
+        /** 中文说明（语言文件缺失时的兜底）。 */
+        final String tooltip;
+
+        LiveQuality(int qn, String key, String label, String tooltip) {
+            this.qn = qn;
+            this.key = key;
+            this.label = label;
+            this.tooltip = tooltip;
+        }
+
+        /** 配置里的 qn 还原成档位；认不出来的值回落到原画。 */
+        static LiveQuality fromQn(int qn) {
+            for (LiveQuality quality : values()) {
+                if (quality.qn == qn) {
+                    return quality;
+                }
+            }
+            return ORIGIN;
+        }
+    }
 
     /**
      * B 站清晰度档位。

@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.mediafix.CineDuct;
+import dev.mediafix.config.StreamConfig;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -26,7 +27,8 @@ import java.time.Duration;
  * 只要用系统时间把原始 PTS 折算成"开播以来的秒数"，就能得到可读的位置与**实时延迟**
  * —— 见 {@link dev.mediafix.engine.MediaEngine} 里的直播锚点。
  *
- * <p>清晰度固定取 qn=10000（原画）。直播不做 ABR：切档必须断流重连，体验反而更差。
+ * <p>清晰度取 {@link StreamConfig#liveQn}（默认 10000 原画）。直播不做 ABR：切档必须断流重连，体验反而更差；
+ * 设置界面里的「直播清晰度」改的就是这个值。
  */
 public final class BiliLive {
 
@@ -37,10 +39,10 @@ public final class BiliLive {
     private static final String UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-    /** protocol=0(http_stream) / format=0(flv) / codec=0(avc) / qn=10000(原画)。 */
+    /** protocol=0(http_stream) / format=0(flv) / codec=0(avc) / qn 由配置决定。 */
     private static final String API =
             "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo"
-                    + "?room_id=%d&protocol=0&format=0&codec=0&qn=10000&platform=web&ptype=8";
+                    + "?room_id=%d&protocol=0&format=0&codec=0&qn=%d&platform=web&ptype=8";
 
     private static final HttpClient CLIENT = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -56,7 +58,8 @@ public final class BiliLive {
      */
     public static Stream resolve(long roomId) {
         try {
-            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(String.format(API, roomId)))
+            HttpRequest.Builder builder = HttpRequest.newBuilder(
+                            URI.create(String.format(API, roomId, StreamConfig.liveQn)))
                     .header("User-Agent", UA)
                     .header("Referer", "https://live.bilibili.com/")
                     .header("Accept", "application/json")
