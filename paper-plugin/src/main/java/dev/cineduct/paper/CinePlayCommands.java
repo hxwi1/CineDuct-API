@@ -308,8 +308,8 @@ final class CinePlayCommands {
 
         final Location[] points = this.plugin.selector().points(player);
         final Location[] corners;
+        final org.bukkit.block.BlockFace[] faces = this.plugin.selector().faces(player);
         try {
-            final org.bukkit.block.BlockFace[] faces = this.plugin.selector().faces(player);
             corners = Geometry.corners(points[0], faces[0], points[1], faces[1]);
         } catch (IllegalArgumentException e) {
             Messages.error(sender, e.getMessage());
@@ -318,6 +318,11 @@ final class CinePlayCommands {
 
         final Screens.Screen screen = this.plugin.screens().getOrCreate(name);
         screen.corners = List.of(corners[0], corners[1], corners[2], corners[3]);
+        // 原始选点也存下来：以后调几何规则（法线、+1 格、浮出距离）不需要玩家重建屏幕
+        screen.origin1 = points[0];
+        screen.origin2 = points[1];
+        screen.face1 = faces[0] == null ? "NORTH" : faces[0].name();
+        screen.face2 = faces[1] == null ? "NORTH" : faces[1].name();
         this.plugin.screens().put(screen);
         this.plugin.selector().finish(player);
 

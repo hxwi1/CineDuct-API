@@ -38,6 +38,18 @@ final class Screens {
         /** 四角（环序：左上→右上→右下→左下）；空 = 还没选点。 */
         List<Location> corners = List.of();
 
+        /*
+         * 选点原始数据（两个方块坐标 + 点击到的面）。
+         *
+         * 存它而不是只存算好的四角：几何规则（面法线、+1 格、浮出距离）以后还会调，
+         * 只存四角的话每次改规则都要求玩家把屏幕删了重建 —— 上一次调 SURFACE_GAP
+         * 就是"改了没反应"，实际是旧坐标还躺在存档里。
+         */
+        Location origin1;
+        Location origin2;
+        String face1;
+        String face2;
+
         /** 锚点：某个时刻应播到 positionMs。 */
         long positionMs;
         long anchorWallMs;
@@ -125,6 +137,15 @@ final class Screens {
         return new LinkedHashMap<>(this.screens);
     }
 
+    private static Location vec(ConfigurationSection s, String key, World world) {
+        final List<Double> list = new ArrayList<>(3);
+        for (Object o : s.getList(key, List.of())) {
+            list.add(o instanceof Number n ? n.doubleValue() : 0.0);
+        }
+        if (world == null || list.size() != 3) return null;
+        return new Location(world, list.get(0), list.get(1), list.get(2));
+    }
+
     private File file() {
         return new File(this.plugin.getDataFolder(), "screens.yml");
     }
@@ -168,6 +189,21 @@ final class Screens {
                 for (List<Double> xyz : raw) corners.add(new Location(w, xyz.get(0), xyz.get(1), xyz.get(2)));
                 screen.corners = List.copyOf(corners);
             }
+            screen.origin1 = vec(s, "origin1", w);
+            screen.origin2 = vec(s, "origin2", w);
+            screen.face1 = s.getString("face1");
+            screen.face2 = s.getString("face2");
+            // 有原始选点就按**当前**几何规则重算四角（改了规则不用重建屏幕）
+            if (screen.origin1 != null && screen.origin2 != null) {
+                try {
+                    screen.corners = List.of(Geometry.corners(screen.origin1,
+                            org.bukkit.block.BlockFace.valueOf(screen.face1),
+                            screen.origin2, org.bukkit.block.BlockFace.valueOf(screen.face2)));
+                } catch (Exception e) {
+                    this.plugin.getLogger().warning("重算屏幕 " + screen.name + " 的几何失败（沿用存档里的四角）: "
+                            + e.getMessage());
+                }
+            }
             this.screens.put(screen.name, screen);
         }
         this.plugin.getLogger().info("已载入 " + this.screens.size() + " 块屏幕");
@@ -185,6 +221,12 @@ final class Screens {
             yaml.set(path + ".positionMs", screen.currentPositionMs());
             yaml.set(path + ".paused", screen.paused);
             yaml.set(path + ".live", screen.live);
+            if (screen.origin1 != null && screen.origin2 != null) {
+                yaml.set(path + ".origin1", List.of(screen.origin1.getX(), screen.origin1.getY(), screen.origin1.getZ()));
+                yaml.set(path + ".origin2", List.of(screen.origin2.getX(), screen.origin2.getY(), screen.origin2.getZ()));
+                yaml.set(path + ".face1", screen.face1);
+                yaml.set(path + ".face2", screen.face2);
+            }
             if (!screen.corners.isEmpty()) {
                 final Location first = screen.corners.getFirst();
                 yaml.set(path + ".world", first.getWorld() == null ? "" : first.getWorld().getName());
