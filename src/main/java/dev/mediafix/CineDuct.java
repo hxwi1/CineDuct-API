@@ -388,6 +388,8 @@ public final class CineDuct {
             Sessions.tickHealth();
             // 服务端控制通道的状态回执（心跳 / 状态跳变；没启用时是一次空判断）
             dev.mediafix.net.CineStateUplink.tick();
+            // 虚拟屏的距离门控：进范围开播、出范围释放（没有虚拟屏时是一次空判断）
+            dev.mediafix.client.SlotPlayback.tick();
         } catch (Throwable t) {
             LOGGER.warn("[CineDuct] 清理屏幕客户端状态失败", t);
         }
@@ -405,6 +407,7 @@ public final class CineDuct {
             net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
         try {
             dev.mediafix.net.CineControlHandler.closeAll("退服/换服");
+            dev.mediafix.client.SlotPlayback.closeAll("退服/换服");
         } catch (Throwable t) {
             LOGGER.warn("[CineDuct] 退服清理服务端播放失败", t);
         }

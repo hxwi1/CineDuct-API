@@ -62,6 +62,11 @@ public final class ScreenStageRenderer {
     private static int diagNoFrame;
     private static final java.util.Set<Integer> diagDrawnIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+    /** 平方（剔除用，少敲几个字符也比 Math.pow 清楚）。 */
+    private static double square(double v) {
+        return v * v;
+    }
+
     private ScreenStageRenderer() {
     }
 
@@ -110,6 +115,17 @@ public final class ScreenStageRenderer {
                 diagScreens++;
                 drawOne(screen, camera, pose, source, event);
             }
+            /*
+             * 服务端（Paper 插件）下发的**虚拟屏**：没有实体，只有四个角点。
+             * 走同一个阶段、同一套 RenderType —— 所以光影/Sodium 那两条坑都不用重新踩。
+             */
+            for (dev.mediafix.client.SlotPlayback slot : dev.mediafix.client.SlotPlayback.visible()) {
+                final var screen = slot.screen();
+                if (screen == null) continue;
+                // 粗剔除：以中心为球心、半径 = 到最远角点（四边形用球剔除够用）
+                if (camera.distanceToSqr(screen.center()) > square(192.0 + screen.radius())) continue;
+                dev.mediafix.client.SlotPlayback.draw(slot, camera, pose, source);
+            }
             final long now = System.currentTimeMillis();
             if (now - diagLastAt >= 5000L) {
                 diagLastAt = now;
@@ -123,8 +139,7 @@ public final class ScreenStageRenderer {
     }
 
     private static void drawOne(ScreenEntity entity, Vec3 camera, PoseStack pose,
-                                MultiBufferSource.BufferSource source, RenderLevelStageEvent event) {
-        // 距离剔除沿用实体自己的判据（192 格），再叠一层视锥判定
+                                MultiBufferSource.BufferSource source, RenderLevelStageEvent event) {        // 距离剔除沿用实体自己的判据（192 格），再叠一层视锥判定
         final Vec3 eye = camera;
         if (!entity.shouldRenderAtSqrDistance(entity.position().distanceToSqr(eye))) return;
         if (!event.getFrustum().isVisible(entity.getBoundingBoxForCulling())) return;

@@ -76,6 +76,8 @@
 
 | op | 额外字段 | 语义 | 对应实现 |
 | --- | --- | --- | --- |
+| `place` | `world`、`corners[4]`、`alpha`、`brightness` | **下发虚拟屏几何**：四个角点（世界坐标，按 左上→右上→右下→左下 的环序）。客户端不建实体，只按这四个点画一个四边形；同一 slot 重复下发＝就地改几何 | `dev.mediafix.client.SlotScreen` |
+| `anchor` | `url`、`positionMs`、`serverTimeMs`、`paused`、`live` | **进度权威**：客户端用 `positionMs + (now − serverTimeMs)` 算出"现在该播到哪"，进范围内起播时按它对齐 | `dev.mediafix.client.SlotPlayback` |
 | `open` | `url`（必需）、`volume`、`loop`、`muted`、`positionMs`、`aspect` | 在该 slot 上开一条本地播放；slot 已存在则先 `close` 再开（等价"换源"） | `CinePlayerApi.open`（`src/main/java/dev/mediafix/api/player/CinePlayerApi.java:56`）+ `PlayerOptions` |
 | `close` | — | 关闭该 slot；不存在则无操作 | `CinePlayer.close`（`CinePlayer.java:224`） |
 | `pause` | `paused`（bool） | 暂停/继续 | `CinePlayer.pause`（`CinePlayer.java:164`） |
@@ -139,18 +141,44 @@
 
 ---
 
-## 8. 未定项：画面谁来画
+## 8. 画面谁来画：**客户端虚拟屏（已定）**
 
-`CinePlayer` 只负责"给出一张能采样的纹理"，**必须有人每帧来画**（`CinePlayer.acquireDrawTexture`，`CinePlayer.java:116`）。Paper 侧控制台没有这个能力，所以要选一个渲染目标：
+`CinePlayer` 只负责"给出一张能采样的纹理"，必须有人每帧来画。Paper 服务端没有渲染能力，
+也**造不出屏幕实体**（`cineduct:screen` 是服务端权威数据，Paper 不加载本模组）。所以：
 
-| 选项 | 说明 | 代价 |
-| --- | --- | --- |
-| **A. 附属客户端 mod 自绘** | 本通道只做控制，渲染交给订阅方（API 已够用） | 需要另写一个客户端 mod |
-| **B. 模组内置"本地屏幕/HUD"** | 新增一个纯客户端的显示目标（如固定在屏幕某个位置的全屏层/画中画），由 `slot` 决定位置 | 是本协议之外的新功能，工作量最大但"开箱可用" |
-| **C. 只做音频/只做状态** | 不画，只放声音或只回执状态 | 不满足"看到画面" |
+- **服务端管状态**：这块屏在哪（几何）、放什么（播放列表）、放到哪（进度锚点）；
+- **客户端管渲染与资源**：按几何画四边形，进出距离自己开播/释放。
 
-**建议**：先做 A + 留好 B 的接口位（`slot` 里编码显示位置，如 `hud:pip:bottom-right`），等你确定要"服务器一发包客户端就出画面"时再实现 B。
+几何由插件用**两个对角点**确定（见 §8.1）；`place` 下发四个角点，客户端不做几何推导，只按环序画。
+这样以后要斜放的屏、拼接屏都不用改协议。
 
+### 距离门控（客户端实现）
+
+| 条件 | 动作 |
+| --- | --- |
+| 与屏幕中心 ≤ `enterDistance`（默认 48 格） | 没有 slot 就按 `anchor` 起播；有就继续 |
+| ≥ `exitDistance`（默认 64 格） | `close` 并释放纹理/解码器/声卡 |
+| 有几何但没收到过 `anchor` | 发一条 `query`（§6 上行）向服务端要 |
+
+**为什么进出距离不同**：每次起播都要重新解析直链（B 站要发请求）。边界上晃来晃去如果用同一个阈值，
+会变成"走走停停反复重开"，比不播更糟。
+
+## 8.1 选点交互（插件侧，`/cineplay create`）
+
+1. `/cineplay create [名字]` → 该玩家进入选区模式（默认名字 `main`）；
+2. **手持木锄右键**两次，记两个对角点（射线取方块表面，最多 64 格）；
+3. 第二次点击后插件算几何并下发 `place`：屏幕**面朝玩家**（只取水平 yaw）、**俯仰固定 90°**
+   （竖直摆放，不跟随抬头低头），两个角点投影到这个平面上取包围盒作为宽高；
+4. 选区期间**只给该玩家**撒粒子描边（服务端 `world_particles`，一次几百个点、几秒）。
+
+> 粒子只用于**选区预览**，不做常驻描边 —— 常驻描边要每 tick 给每个玩家发包，几十人同屏就是网络灾难；
+> 而"空屏看不见"这个问题用 `/cineplay status` 与选点回执解决更省。
+
+## 8.2 播放列表（插件侧）
+
+每块屏维护 `playlist: [url...]` 与 `index`：客户端回执 `state=ENDED` → `index++`（到末尾循环）→
+下发新的 `anchor`；`/cineplay add <url>` 追加、`/cineplay playlist` 查看、`/cineplay next|prev` 手动切。
+**没人靠近时不推进** —— 这是影院，散场就该停着。
 ---
 
 ## 9. 实施计划

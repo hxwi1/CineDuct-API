@@ -24,7 +24,9 @@ public final class CineControlPacket {
 
     /** 认识的 op。{@code sync} 是对一批 slot 的 open/close 组合，不新增播放能力。 */
     public static final Set<String> OPS = Set.of(
-            "open", "close", "pause", "seek", "volume", "mute", "repeat", "aspect", "rebuild", "sync", "list");
+            "open", "close", "pause", "seek", "volume", "mute", "repeat", "aspect", "rebuild", "sync", "list",
+            // 虚拟屏：几何下发 / 进度锚点（见 docs/paper-control-payload.md §8）
+            "place", "anchor");
 
     /** slot 名：1~32 个 {@code [A-Za-z0-9_.-]}。 */
     private static final Pattern SLOT = Pattern.compile("[A-Za-z0-9_.-]{1,32}");
@@ -43,6 +45,12 @@ public final class CineControlPacket {
     public final Integer volume;
     public final Long positionMs;
     public final Float aspect;
+    /** {@code anchor} 的服务端时刻（毫秒）：客户端只做参考，不拿它算延迟。 */
+    public final Long serverTimeMs;
+    /** {@code anchor} 是否直播（直播时客户端不做"按锚点外推"）。 */
+    public final Boolean live;
+    /** 原始报文（{@code place} 的四角几何直接从这里解析）。 */
+    public final JsonObject raw;
     /** {@code sync} 携带的一组 slot 规格（每项等价于一条 open）。 */
     public final List<Entry> entries;
 
@@ -73,6 +81,9 @@ public final class CineControlPacket {
                 : intOrNull(o, "percent");
         this.aspect = floatOrNull(o, "aspect");
         this.entries = parseEntries(o);
+        this.serverTimeMs = longOrNull(o, "serverTimeMs");
+        this.live = boolOr(o, "live");
+        this.raw = o;
     }
 
     /** {@code sync} 里的一项。 */

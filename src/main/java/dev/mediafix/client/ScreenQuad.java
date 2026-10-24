@@ -128,4 +128,18 @@ final class ScreenQuad {
                 .setUv(corner[2], corner[3])
                 .setLight(LightTexture.FULL_BRIGHT);
     }
+
+    /**
+     * 写一个**世界坐标**顶点（用于虚拟屏：几何由服务端下发，不是本地矩形）。
+     *
+     * <p>与 {@link #emit} 的区别只有一个：z 由参数决定，而不是恒为 0。
+     * 调用前把"相机相对偏移"压进 PoseStack（见 {@code SlotPlayback.draw}）。
+     */
+    static void emit3(VertexConsumer consumer, PoseStack.Pose pose, net.minecraft.world.phys.Vec3 p,
+                      float u, float v, float brightness, float alpha) {
+        consumer.addVertex(pose, (float) p.x, (float) p.y, (float) p.z)
+                .setColor(brightness, brightness, brightness, alpha)
+                .setUv(u, v)
+                .setLight(LightTexture.FULL_BRIGHT);
+    }
 }

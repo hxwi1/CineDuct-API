@@ -160,6 +160,18 @@ public final class CineControlHandler {
                 // 无副作用：回执由调用方统一发（sendNow）
             }
             case "sync" -> sync(p);
+            /*
+             * 虚拟屏（docs/paper-control-payload.md §8）：
+             *   place  = 几何（四个角点），客户端只负责画；
+             *   anchor = 进度权威，客户端按它算"现在该播到哪"，进范围内才真的开播。
+             * 两个都不直接开播放器 —— 开播由距离门控决定（SlotPlayback.tick）。
+             */
+            case "place" -> dev.mediafix.client.SlotPlayback.applyPlace(
+                    dev.mediafix.client.SlotScreen.parse(p.slot, p.raw));
+            case "anchor" -> dev.mediafix.client.SlotPlayback.applyAnchor(
+                    p.slot, p.url, p.positionMs == null ? 0L : p.positionMs,
+                    p.serverTimeMs == null ? 0L : p.serverTimeMs,
+                    p.paused != null && p.paused, p.live != null && p.live);
             default -> throw new IllegalStateException("未实现的 op: " + p.op);
         }
     }
