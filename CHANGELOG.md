@@ -2,11 +2,15 @@
 
 > 3.0.0 起显示名改为 **CineDuct API**（modid `cineduct`、指令 `/cineduct`；Java 包名仍是 `dev.mediafix`），并从"前置 mod 附属"改为**独立模组**：不再需要 waterframes / watermedia / bilibili_media，屏幕是实体、指令驱动、带开放 API，播放走自研 FFmpeg 引擎 + 可选的 C++ 子进程零拷贝。
 
+> 版本号规则：`<MMdd>-build-<通道>`，例如 `1025-build-alpha` = 10 月 25 日构建的 alpha 包。
+> 更早的条目沿用的是当时的产出版本名，保留原样。
+
 ---
 
-## CineDuct API 3.3.0-alpha-1017 · 设置接进 Sodium + 账号权限 + 中英双语 (2026-10-18)
+## CineDuct API 1025-build-alpha · 子进程缓冲 + Sodium 设置 + 账号权限 + 中英双语 (2026-10-25)
 
-> 模组设置搬进了 Sodium 的「视频设置」界面，并按 B 站账号权限收窄可选档位。
+> 模组设置搬进了 Sodium 的「视频设置」界面，并按 B 站账号权限收窄可选档位；
+> 同时把子进程的缓冲改成按秒计（起播预缓冲 + 卡顿闸门）。
 
 - **Sodium 集成**：新增「播放 / 账号」页（清晰度、直播清晰度、零拷贝子进程、进程内硬解、避开 AV1、音轨偏好、音画同步、与服务端校验的最大延迟），
   只用 Sodium 0.8.13 的公开配置 API，不注入、不 Mixin；没装 Sodium 时功能完全不受影响。
@@ -18,6 +22,15 @@
   第三方声明（CicadaPlayer / OBS / FFmpeg / JavaCPP / ZXing）与许可全文随 jar 分发（`META-INF/`）。
 - 修复：`hwAccel` 拆成「玩家偏好」与「本局运行时状态」，避免硬解自动降级被当成玩家选择写进配置。
 - 文档：README 重写为中英双语；`deploy.ps1` 修正为按 `cineduct-*.jar` 部署（原先还在找 `mediafix-*`，必然失败）。
+- **缓冲按秒计**：子进程包队列改用「首尾 PTS 跨度」限深（`bufferTargetMs`，默认 4000ms），
+  网络侧稳定领先播放位置若干秒，不再只靠条数/字节判断。
+- **起播预缓冲**：第一帧解出来后先攒够水位再开播、再放声卡（`prerollMs`，默认 1500ms）。
+- **卡顿闸门**：供给见底、或游戏进程连续 1.5 秒没来取帧时，子进程把时钟与声卡一同冻住等缓存，
+  恢复后从同一位置继续（`stallGateMs`，默认 1500ms；`bufferGate` 可一键关掉做对照）。
+  闸门期间 `MediaSession` 与 `ScreenClientState` 会相应让路（不判卡死、不做进度纠偏）。
+- **可观测**：状态块 v11 追加 9 个字段（水位 / 目标水位 / 闸门 / 消费者停顿 / 累计冻住时长），
+  `/cineduct status` 新增「缓冲: 水位=…/…ms」一行，进出闸门各打一条日志。
+- 缓冲部分的参数与取舍见 `docs/PLAN-preload-buffer.md`。
 
 ---
 

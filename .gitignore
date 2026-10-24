@@ -51,3 +51,8 @@ repo/
 /libs/
 /native/build/
 /native/testdata/
+
+### 生成的导出物（不进版本库）###
+# tools/export-api-doc.ps1 的产物：给玩家看的独立版 API 文档。
+# 仓库内的权威版本是 docs/API.md —— 这份是从它生成的，提交进来必然过期。
+/CineDuct-API-中文文档.md

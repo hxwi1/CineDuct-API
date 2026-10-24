@@ -265,13 +265,15 @@ seek -> 2ms（视频=ok 音频=ok）        ← 有 seek
 seek 只能排队、落后了没有丢帧策略、硬解打不开就整个进程退出。现在按成熟播放器的结构拆开了。
 
 ```
-[demux 线程]  av_read_frame ──► 包队列（60 包 / 8MB，满了睡；打断回调挂在 AVFormatContext 上）
-     ▲                              │  所有阻塞等待都能被 seek / 停止唤醒
+[demux 线程]  av_read_frame ──► 包队列（按 PTS 跨度限深 4 秒 / 128MB / 2000 包，满了睡；
+     ▲                          打断回调挂在 AVFormatContext 上；见 8.10）
+     │                              │  所有阻塞等待都能被 seek / 停止唤醒
      │ interrupt_callback           ▼
 [解码线程]  avcodec_send/receive ──► 帧队列（3 帧，满了等而不是丢）
      ▲                              │
      │                              ▼
 [呈现线程 = main 线程]  主时钟判定（等 / 丢）──► 转换 ──► 共享纹理 ──► 状态块
+                       └─ 缓冲闸门：供给见底 / 客户端卡顿 → 冻住时钟等缓存（见 8.10）
 ```
 
 **seek = 三阶段握手**（每段由各自的线程做，靠一个递增的"世代号" `seek.generation` 对齐；
@@ -541,7 +543,8 @@ seek 只能排队、落后了没有丢帧策略、硬解打不开就整个进程
   （`hello / status / pause / seek / volume / loop / av-offset / quit`）；
 - 共享状态块 `spike/shared/cineduct_spike_status.h`：**原有字段的偏移一个都没动**。
   v4 只在**末尾追加**了 4 个诊断字段（`decodeMode@372` / `buffering@376` / `seekHealCount@380` /
-  `droppedLate@384`，`kVersion` → 4）。追加是安全的：老 jar 读老偏移依然正确，
+  `droppedLate@384`，`kVersion` → 4）；v11 又追加了 9 个缓冲/闸门字段（`packetBufferMs@744` …
+  `gateTotalMs@776`，`kVersion` → 11，见 8.10）。追加是安全的：老 jar 读老偏移依然正确，
   所以 Java 侧**不做版本号强校验**（只校验 `magic`）。**规矩：以后要加字段也只许追加，不许插入/改序。**
 - 行为约定：片尾不退出进程而是"保持最后一帧待命"、`loop 1` 回卷、暂停冻结画面与位置、
   暂停中 seek 立刻回执、音频坏了不牵连画面、非零 PTS 原点归一。
@@ -642,5 +645,52 @@ seek 只能排队、落后了没有丢帧策略、硬解打不开就整个进程
 
 另外两条路也能验证，但覆盖面不同：把 `gpuHostEnabled` 设成 `false`（**从头**就走 Java 引擎，
 验证引擎本身，不验证交接）、或者连续杀 4 次子进程（验证自愈阶梯 → 回退的全自动路径）。
+
+### 8.10 缓冲水位 / 起播预缓冲 / 卡顿闸门（2026-10-25）
+
+**症状**：点播流"卡一下之后画面跳一段"，有时直接黑屏等很久。**根因有两条，都不在解码器**：
+
+1. **位置永远按主时钟走** —— 客户端卡顿（游戏掉帧、区块加载、GC）时主时钟不等它，
+   恢复后积压的帧全部满足"晚于 100ms"，于是连丢，画面跳过去；
+2. **网络侧只领先 1 秒** —— 包队列按"60 包 / 8MB"限深，一次抖动就抽干。
+
+三个机制（设计、取舍与未做项见 `docs/PLAN-preload-buffer.md`）：
+
+| 机制 | 判据 | 参数（`cineduct-ffmpeg.json` / CLI） |
+| --- | --- | --- |
+| 按秒限深 | 包队列首尾 PTS 跨度达到上限就停读网络 | `bufferTargetMs` / `--buffer-target-ms`，默认 4000 |
+| 起播预缓冲 | 第一帧解出来后，先攒够水位**且**有帧可出才开播（同时放声卡） | `prerollMs` / `--preroll-ms`，默认 1500 |
+| 卡顿闸门 | ① 队列没帧且水位 < 低水位；② **消费者（游戏进程）连续 `stallGateMs` 没取帧** | `stallGateMs` / `--stall-gate-ms`，默认 1500；`bufferGate` / `--no-buffer-gate` 一键关 |
+
+闸门动作 = `clock.setPaused(true)` + `audioSink.setPaused(true)`：**位置真的停住**，
+恢复后从同一位置继续，不再把积压帧当迟到丢掉。
+
+**"消费者没取帧"怎么测**：槽位状态由消费者回写（拷完一帧标 `SHOWN`），
+`pollConsumerProgress()` 只看"有没有新帧号的 `SHOWN`"。零 IPC，不需要游戏侧配合。
+
+**闸门 6 秒硬上限不能随便放大**：冻住期间 `framesPublished` 不涨，而
+`MediaSession.checkHostHealth` 的判据是"8 秒没有新帧就重启子进程"（`STALL_TIMEOUT_MS`）。
+Java 侧现在也会读 `gateActive` 跳过这条判定（双保险），但上限仍留 6 秒 —— 坏源不能被冻成永久。
+
+**Java 侧三处配合**（少一处就会出现"闸门刚生效就被打断"）：
+
+| 位置 | 做什么 | 不做的后果 |
+| --- | --- | --- |
+| `MediaSession.checkHostHealth` | `gateActive` 期间不算卡死 | 冻 8 秒 → 被判卡死 → 重建子进程 |
+| `ScreenClientState.syncProgress` | 闸门期间跳过 5 秒安全网 | 一次卡顿换来一次真 seek（清缓冲 + 重连 CDN） |
+| `MediaSession.reportHostDiagnostics` | 进出闸门各一条日志 | 无法判断"是闸门还是水位在兜" |
+
+**v11 状态字段**（`packetBufferMs@744` / `frameBufferMs@748` / `bufferLevelMs@752` /
+`bufferTargetMs@756` / `gateActive@760` / `gateCount@764` / `consumerStallMs@768` /
+`prerollMs@772` / `gateTotalMs@776`）：Java 读法 `HostSession.bufferSummary()`，
+`/cineduct status` 有一行「缓冲: 水位=…/…ms（网络 … + 已解码 …）⏸ 等缓存中」。
+老 exe 不写这些偏移 → 读到 0 → 显示"水位=未知（旧版子进程）"，**不会**被误判成"一直见底"。
+
+**已知取舍**：闸门期间本地位置**主动落后**服务端，闸门结束后不自动追（播放速度仍是 1 倍）。
+落后累积到 5 秒，`ScreenClientState` 的安全网会 seek 一次重新对齐 —— 也就是"用时间换连续"。
+两头都要就得上"服务端统一延迟 D"（`PLAN-preload-buffer.md` 的 L5，未做）。
+
+**尚未做**：预读线程（下载与播放位置彻底解耦、seek 回退不重下）、自适应水位、自动化回归脚本。
+
 
 

@@ -568,7 +568,11 @@ CineDuctApi.get().resolverNames();                     // 看当前顺序
 | `audioDevice` | `cineduct-ffmpeg.json` | 空 | 指定音频端点（编号/名字子串；空 = 系统默认） |
 | `gpuHostEnabled` | `cineduct-ffmpeg.json` | `true` | 是否优先用 C++ 子进程（零拷贝） |
 | `hostSlots` | `cineduct-ffmpeg.json` | `3` | 子进程共享纹理槽位数 |
-| `prebufferMs` | `cineduct-ffmpeg.json` | `1500` | 起播预缓冲门限（音频提前量） |
+| `prebufferMs` | `cineduct-ffmpeg.json` | `1500` | 起播预缓冲门限（音频提前量，**进程内引擎**） |
+| `prerollMs` | `cineduct-ffmpeg.json` | `1500` | 起播预缓冲门限（**子进程**；0 = 立刻播） |
+| `bufferTargetMs` | `cineduct-ffmpeg.json` | `4000` | 子进程"提前缓存几秒"（包队列 PTS 跨度上限；0 = 退回只按条数/字节限深） |
+| `stallGateMs` | `cineduct-ffmpeg.json` | `1500` | 游戏进程停取帧多久后冻住时钟"等缓存"（0 = 只保留"供给见底才等"那条） |
+| `bufferGate` | `cineduct-ffmpeg.json` | `true` | 缓冲闸门总开关（关掉 = 位置永远按主时钟走，卡了就丢帧追） |
 | `audioBufferMs` | `cineduct-ffmpeg.json` | `2500` | 请求的声卡行缓冲 |
 | `hwAccel` | `cineduct-ffmpeg.json` | `true` | 硬件解码（D3D11VA） |
 | `videoReadAheadMb` / `audioReadAheadMb` | `cineduct-ffmpeg.json` | `48` / `8` | 压缩流预读队列 |
