@@ -192,6 +192,30 @@ public final class CineControlPacket {
         }
     }
 
+    /** 最小 JSON 字符串转义（只处理规范要求的几个字符，够拼上行报文用）。 */
+    static String escapeJson(String text) {
+        if (text == null) return "";
+        final StringBuilder sb = new StringBuilder(text.length() + 8);
+        for (int i = 0; i < text.length(); i++) {
+            final char c = text.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
+    }
+
     /** 报文被拒（版本/op/slot/JSON 不合法）。 */
     public static final class Rejected extends Exception {
         /** 报文自称的版本号（回显用；拿不到时为 -1）。 */

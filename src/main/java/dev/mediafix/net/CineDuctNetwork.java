@@ -1,4 +1,4 @@
-package dev.cineduct.net;
+package dev.mediafix.net;
 
 import dev.mediafix.CineDuct;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -12,6 +12,7 @@ import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 import java.nio.charset.StandardCharsets;
+
 
 /**
  * 服务端控制通道（单向下行，{@code docs/paper-control-payload.md}）。
@@ -53,6 +54,12 @@ public final class CineDuctNetwork {
         }
     }
 
+    /*
+     * 上行的 payload（{@code cineduct:state}）定义在 {@link CineStateUplink} 里，
+     * 这里只负责把它注册上去 —— 依赖保持单向（Network → Uplink），
+     * 反过来写成 Uplink 调 Network 的静态方法会让 javac 报"找不到符号"。
+     */
+
     /** 裸字节写（不带长度前缀：对面可能是 Paper 插件，按原样 UTF-8 读）。 */
     private static void writeRaw(RegistryFriendlyByteBuf buf, String text) {
         final byte[] bytes = (text == null ? "" : text).getBytes(StandardCharsets.UTF_8);
@@ -78,6 +85,10 @@ public final class CineDuctNetwork {
         final PayloadRegistrar registrar = event.registrar("1").optional();
         registrar.playToClient(Control.TYPE, Control.STREAM_CODEC, (payload, context) ->
                 context.enqueueWork(() -> dev.mediafix.net.CineControlHandler.handleOnClient(payload.json())));
-        CineDuct.LOGGER.info("[CineDuct] 服务端控制通道已注册（cineduct:control，optional，单向）");
+        registrar.playToServer(CineControlHandler.Payload.TYPE, CineControlHandler.Payload.STREAM_CODEC, (payload, context) -> {
+            // NeoForge 服务端（装了本模组）收到时长上报：目前只记日志，Paper 插件自己会读
+            CineDuct.LOGGER.debug("[CineDuct] 时长上报: {}", payload.json());
+        });
+        CineDuct.LOGGER.info("[CineDuct] 服务端控制通道已注册（cineduct:control 下行 / cineduct:state 仅时长上报）");
     }
 }

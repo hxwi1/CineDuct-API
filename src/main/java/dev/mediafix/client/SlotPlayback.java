@@ -60,6 +60,8 @@ public final class SlotPlayback {
     private ResourceLocation location;
     private int uploadTextureId = -1;
     private boolean allocated;
+    /** 已经上报过时长的 url（同一视频只报一次）。 */
+    private String reportedUrl;
 
     private SlotPlayback(String slot) {
         this.slot = slot;
@@ -141,6 +143,7 @@ public final class SlotPlayback {
                 if (playback.player != null) playback.closePlayer("离开了这个维度");
                 continue;
             }
+            playback.reportDurationOnce();
             final double dist = screen.center().distanceTo(eye);
             if (playback.player == null) {
                 if (dist <= ENTER && playback.hasAnchor) playback.openPlayer();
@@ -153,6 +156,22 @@ public final class SlotPlayback {
     // =====================================================================
     // 播放器
     // =====================================================================
+
+    /**
+     * 起播后上报一次时长（上行唯一用途）。
+     *
+     * <p>为什么由客户端报：时长只有真放起来才知道，而且它天然带着"非大会员只能试看 6 分钟"
+     * 这类截断 —— 服务端查 API 只能拿到总时长，算不对。
+     */
+    private void reportDurationOnce() {
+        final CinePlayer p = this.player;
+        if (p == null || this.anchorUrl == null || this.anchorUrl.equals(this.reportedUrl)) return;
+        final long durationMs = p.durationMs();
+        final boolean live = p.isLive();
+        if (!live && durationMs <= 0) return;          // 还没拿到时长：下一 tick 再报
+        dev.mediafix.net.CineControlHandler.reportDuration(this.slot, this.anchorUrl, durationMs, live);
+        this.reportedUrl = this.anchorUrl;
+    }
 
     private void openPlayer() {
         if (!CinePlayerApi.available() || this.anchorUrl == null) return;

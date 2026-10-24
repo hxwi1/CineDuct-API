@@ -66,19 +66,16 @@ public final class CineControlHandler {
             packet = CineControlPacket.parse(json);
         } catch (CineControlPacket.Rejected rejected) {
             CineDuct.LOGGER.info("[CineDuct] 服务端控制报文被拒：{}", rejected.getMessage());
-            CineStateUplink.sendError(rejected.echoedVersion, rejected.getMessage());
             return;
         }
 
         final CineGate.Verdict verdict = CineGate.check(packet, addr);
         if (!verdict.allow()) {
             CineGate.logDeny(packet.op, packet.slot, verdict.reason());
-            CineStateUplink.sendError(packet.v, verdict.reason());
             return;
         }
 
         if (!CinePlayerApi.available()) {
-            CineStateUplink.sendError(packet.v, "本客户端没有独立播放器 API（模组未加载？）");
             return;
         }
 
@@ -87,10 +84,8 @@ public final class CineControlHandler {
             if (packet.seq > lastAckSeq) lastAckSeq = packet.seq;
         } catch (Throwable t) {
             CineDuct.LOGGER.warn("[CineDuct] 执行服务端控制失败（op={} slot={}）", packet.op, packet.slot, t);
-            CineStateUplink.sendError(packet.v, "执行失败: " + t.getMessage());
             return;
         }
-        CineStateUplink.sendNow("control:" + packet.op);
     }
 
     /**
@@ -106,7 +101,6 @@ public final class CineControlHandler {
             packet = CineControlPacket.parse(json);
         } catch (CineControlPacket.Rejected rejected) {
             CineDuct.LOGGER.info("[CineDuct] 本地测试报文被拒：{}", rejected.getMessage());
-            CineStateUplink.sendError(rejected.echoedVersion, rejected.getMessage());
             return;
         }
         try {
@@ -114,10 +108,8 @@ public final class CineControlHandler {
             if (packet.seq > lastAckSeq) lastAckSeq = packet.seq;
         } catch (Throwable t) {
             CineDuct.LOGGER.warn("[CineDuct] 本地测试执行失败（op={} slot={}）", packet.op, packet.slot, t);
-            CineStateUplink.sendError(packet.v, "执行失败: " + t.getMessage());
             return;
         }
-        CineStateUplink.sendNow("local-test:" + packet.op);
     }
 
     /** 真正执行。**幂等**：重复下发同一 op 结果一致（§3 的通用规则）。 */
@@ -294,6 +286,82 @@ public final class CineControlHandler {
         final ServerData data = mc.getCurrentServer();
         if (data == null) return mc.hasSingleplayerServer() ? "singleplayer" : "";
         return data.ip == null ? "" : data.ip;
+    }
+
+    // =====================================================================
+    // 上行：一次性的时长上报
+    // =====================================================================
+
+    /** 已经上报过时长的 (slot, url)。 */
+    private static final java.util.Set<String> REPORTED =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
+    /**
+     * 客户端 → 服务端：时长上报（JSON 文本，裸字节，与下行同样的编解码约定）。
+     *
+     * <p>payload 放在这个类里而不是单独一个类：同包两个类互相引用时 javac 曾报
+     * "找不到符号 / 程序包不存在"（排查成本很高），而这里本来就和处理链路同源，合并没损失。
+     */
+    public record Payload(String json)
+            implements net.minecraft.network.protocol.common.custom.CustomPacketPayload {
+
+        public static final net.minecraft.network.protocol.common.custom.CustomPacketPayload.Type<Payload> TYPE =
+                new net.minecraft.network.protocol.common.custom.CustomPacketPayload.Type<>(
+                        net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(
+                                dev.mediafix.CineDuct.MODID, "state"));
+
+        public static final net.minecraft.network.codec.StreamCodec<
+                net.minecraft.network.RegistryFriendlyByteBuf, Payload> STREAM_CODEC =
+                net.minecraft.network.codec.StreamCodec.of((buf, value) -> {
+                    final byte[] bytes = (value.json() == null ? "" : value.json())
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    if (bytes.length > 30 * 1024) {
+                        throw new IllegalArgumentException("上报过大: " + bytes.length);
+                    }
+                    buf.writeBytes(bytes);
+                }, buf -> {
+                    final int n = buf.readableBytes();
+                    if (n <= 0 || n > 30 * 1024) throw new IllegalArgumentException("上报长度非法: " + n);
+                    final byte[] bytes = new byte[n];
+                    buf.readBytes(bytes);
+                    return new Payload(new String(bytes, java.nio.charset.StandardCharsets.UTF_8));
+                });
+
+        @Override
+        public net.minecraft.network.protocol.common.custom.CustomPacketPayload.Type<? extends
+                net.minecraft.network.protocol.common.custom.CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * 上报一条播放的实际时长（**只报一次**）。
+     *
+     * <p>服务端要自动推进播放列表就必须知道"这条放完了没有"，而时长只有真放起来的客户端才知道
+     * —— 它天然带着"非大会员只能试看 6 分钟"这类截断，服务端查 API 查不出来。
+     */
+    public static void reportDuration(String slot, String url, long durationMs, boolean live) {
+        if (slot == null || url == null || url.isEmpty()) return;
+        if (!live && durationMs <= 0) return;                 // 还没拿到时长：下一帧再报
+        if (!REPORTED.add(slot + '\u0000' + url)) return;      // 已经报过
+        final String json = "{"
+                + "\"v\":" + CineControlPacket.PROTOCOL
+                + ",\"op\":\"duration\""
+                + ",\"slot\":\"" + CineControlPacket.escapeJson(slot) + "\""
+                + ",\"url\":\"" + CineControlPacket.escapeJson(url) + "\""
+                + ",\"durationMs\":" + Math.max(0L, durationMs)
+                + ",\"live\":" + live
+                + "}";
+        try {
+            net.neoforged.neoforge.network.PacketDistributor.sendToServer(new Payload(json));
+        } catch (Throwable t) {
+            REPORTED.remove(slot + '\u0000' + url);
+        }
+    }
+
+    /** 退服/换服：清掉"已上报"记录（换服后同一个视频要重新告诉新服务端）。 */
+    public static void resetReports() {
+        REPORTED.clear();
     }
 }
 

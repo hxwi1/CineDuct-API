@@ -206,6 +206,24 @@ final class Screens {
     }
 
     /**
+     * 写回某一项的时长（客户端起播时上报的实际时长）。
+     *
+     * <p>比插件自己查 API 更准：客户端知道自己实际放的是什么（清晰度、是否只有试看片段），
+     * 所以**上报值覆盖查询值**。找不到对应项就忽略（可能是客户端自己开的播放，不属于这块屏）。
+     */
+    synchronized boolean setDurationByUrl(String screenName, String url, int seconds) {
+        final Screen screen = get(screenName);
+        if (screen == null || url == null || seconds <= 0) return false;
+        final int index = screen.playlist.indexOf(url);
+        if (index < 0) return false;
+        while (screen.durations.size() <= index) screen.durations.add(0);
+        if (screen.durations.get(index) == seconds) return false;
+        screen.durations.set(index, seconds);
+        save();
+        return true;
+    }
+
+    /**
      * 写回某一项的时长（异步查询回来的结果）。
      *
      * @return false = 这一项已经不在了（列表被改过），忽略即可

@@ -25,6 +25,8 @@ public final class CinePlayPlugin extends JavaPlugin {
 
     /** 下行：服务端 → 客户端。 */
     public static final String CHANNEL_CONTROL = "cineduct:control";
+    /** 上行：客户端起播时上报一次实际时长（唯一的上行数据）。 */
+    public static final String CHANNEL_STATE = "cineduct:state";
 
     /** 单包上限：Bukkit 自定义通道约 32 KB；客户端那边也按 30 KB 校验。 */
     private static final int MAX_BYTES = 30 * 1024;
@@ -45,6 +47,7 @@ public final class CinePlayPlugin extends JavaPlugin {
     public void onEnable() {
         saveDefaultConfig();
         getServer().getMessenger().registerOutgoingPluginChannel(this, CHANNEL_CONTROL);
+        getServer().getMessenger().registerIncomingPluginChannel(this, CHANNEL_STATE, this::onDurationReport);
 
         this.durations = new DurationLookup(this);
         this.screens = new Screens(this);
@@ -70,6 +73,7 @@ public final class CinePlayPlugin extends JavaPlugin {
     @Override
     public void onDisable() {
         getServer().getMessenger().unregisterOutgoingPluginChannel(this, CHANNEL_CONTROL);
+        getServer().getMessenger().unregisterIncomingPluginChannel(this, CHANNEL_STATE);
         if (this.screens != null) this.screens.save();
         this.slots.clear();
         this.lastPlayAt.clear();
@@ -100,6 +104,38 @@ public final class CinePlayPlugin extends JavaPlugin {
         if (isRequireChannel() && !player.getListeningPluginChannels().contains(CHANNEL_CONTROL)) return false;
         player.sendPluginMessage(this, CHANNEL_CONTROL, data);
         return true;
+    }
+
+    /**
+     * 上行：客户端起播时报告一次实际时长（{@code {"op":"duration","slot":…,"url":…,"durationMs":…}}）。
+     *
+     * <p>这是**唯一**的上行数据，也是自动推进的依据：时长只有真放起来的客户端才知道，
+     * 而且它天然带着"非大会员只能试看 6 分钟"这类截断 —— 插件查 API 只能拿到总时长，算不对。
+     */
+    private void onDurationReport(String channel, Player player, byte[] data) {
+        if (player == null || data == null || !CHANNEL_STATE.equals(channel)) return;
+        try {
+            final com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(
+                    new String(data, StandardCharsets.UTF_8));
+            if (root == null || !root.isJsonObject()) return;
+            final com.google.gson.JsonObject o = root.getAsJsonObject();
+            if (!o.has("op") || !"duration".equals(o.get("op").getAsString())) return;
+            final String slot = o.has("slot") ? o.get("slot").getAsString() : "";
+            final String url = o.has("url") ? o.get("url").getAsString() : "";
+            final long durationMs = o.has("durationMs") ? o.get("durationMs").getAsLong() : 0L;
+            final boolean live = o.has("live") && o.get("live").getAsBoolean();
+            if (live || durationMs <= 0) {
+                getLogger().info(player.getName() + " 上报 " + slot + " 是直播/时长未知 → 不参与自动推进");
+                return;
+            }
+            final int seconds = (int) Math.min(Integer.MAX_VALUE, durationMs / 1000L);
+            if (this.screens.setDurationByUrl(slot, url, seconds)) {
+                getLogger().info(player.getName() + " 上报时长：" + slot + " 「" + Screens.safeUrl(url)
+                        + "」= " + seconds + "s（自动推进按这个走）");
+            }
+        } catch (Throwable t) {
+            getLogger().warning("解析时长上报失败: " + t.getMessage());
+        }
     }
 
     /** 让所有客户端把某个 slot 关掉（删屏幕时用）。 */
