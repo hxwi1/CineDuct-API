@@ -144,6 +144,7 @@ final class CinePlayCommands {
         root.then(Commands.literal("playlist")
                 .executes(ctx -> playlist(ctx, targetScreenName(ctx.getSource())))
                 .then(Commands.argument("screen", StringArgumentType.word())
+                        .suggests(this::suggestScreens)
                         .executes(ctx -> playlist(ctx, StringArgumentType.getString(ctx, "screen")))));
 
         root.then(Commands.literal("next")
@@ -161,6 +162,10 @@ final class CinePlayCommands {
         root.then(Commands.literal("remove")
                 .requires(src -> src.getSender().hasPermission("cineplay.admin"))
                 .then(Commands.argument("name", StringArgumentType.word())
+                        .suggests((ctx, builder) -> {
+                            for (String n : this.plugin.screens().names()) builder.suggest(n);
+                            return builder.buildFuture();
+                        })
                         .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name")))));
 
         root.then(Commands.literal("help").executes(ctx -> help(ctx)));
@@ -444,6 +449,14 @@ final class CinePlayCommands {
         return this.plugin.defaultSlot();
     }
 
+    /** 屏幕名补全（`remove` / `playlist` / `next` / `prev` 共用）。 */
+    private java.util.concurrent.CompletableFuture<com.mojang.brigadier.suggestion.Suggestions> suggestScreens(
+            CommandContext<CommandSourceStack> ctx,
+            com.mojang.brigadier.suggestion.SuggestionsBuilder builder) {
+        for (String n : this.plugin.screens().names()) builder.suggest(n);
+        return builder.buildFuture();
+    }
+
     private static String describe(Location[] corners) {
         final double w = corners[0].distance(corners[1]);
         final double h = corners[1].distance(corners[2]);
@@ -532,7 +545,20 @@ final class CinePlayCommands {
                 .append(Component.text("      显示面比例（1.7778 = 16:9；0 = 关闭）", NamedTextColor.GRAY)));
         lines.add(Component.text("  /cineplay rebuild|list|sync", NamedTextColor.AQUA)
                 .append(Component.text("    重建 / 请求回执 / 对齐", NamedTextColor.GRAY)));
-        lines.add(Component.text("  /cineplay to <目标> <子指令>", NamedTextColor.AQUA)
+        lines.add(Component.text("  /cineplay create", NamedTextColor.AQUA)
+                .append(Component.text("              开始选区（木锄右键点两个对角）", NamedTextColor.GRAY)));
+        lines.add(Component.text("  /cineplay confirm <名字>", NamedTextColor.AQUA)
+                .append(Component.text("   确认并命名这块屏", NamedTextColor.GRAY)));
+        lines.add(Component.text("  /cineplay cancel", NamedTextColor.AQUA)
+                .append(Component.text("              放弃这次选区", NamedTextColor.GRAY)));
+        lines.add(Component.text("  /cineplay add [屏幕] <链接> [秒]", NamedTextColor.AQUA)
+                .append(Component.text(" 加入播放列表（秒数可省，插件会自己查）", NamedTextColor.GRAY)));
+        lines.add(Component.text("  /cineplay playlist|next|prev [屏幕]", NamedTextColor.AQUA)
+                .append(Component.text(" 查看 / 切上一条 / 切下一条", NamedTextColor.GRAY)));
+        lines.add(Component.text("  /cineplay screens", NamedTextColor.AQUA)
+                .append(Component.text("             列出所有屏幕与进度", NamedTextColor.GRAY)));
+        lines.add(Component.text("  /cineplay remove <名字>", NamedTextColor.AQUA)
+                .append(Component.text("     删除这块屏（并让客户端停掉播放）", NamedTextColor.GRAY)));        lines.add(Component.text("  /cineplay to <目标> <子指令>", NamedTextColor.AQUA)
                 .append(Component.text(" 对别人执行（@a、玩家名、选择器都行）", NamedTextColor.GRAY)));
         lines.add(Component.text("  /cineplay slot [名字]", NamedTextColor.AQUA)
                 .append(Component.text("      查看/切换当前操作的槽位", NamedTextColor.GRAY)));
