@@ -45,6 +45,8 @@ final class Selector implements Listener {
     private static final class Session {
         Location pos1;
         Location pos2;
+        org.bukkit.block.BlockFace face1;
+        org.bukkit.block.BlockFace face2;
         long touchedAt;
     }
 
@@ -99,6 +101,13 @@ final class Selector implements Listener {
         return session == null ? null : new Location[]{session.pos1, session.pos2};
     }
 
+    /** 两次点击落到的方块面（没有会话时为 null）。 */
+    org.bukkit.block.BlockFace[] faces(Player player) {
+        final Session session = session(player);
+        return session == null ? new org.bukkit.block.BlockFace[]{null, null}
+                : new org.bukkit.block.BlockFace[]{session.face1, session.face2};
+    }
+
     void finish(Player player) {
         this.sessions.remove(player.getUniqueId());
     }
@@ -122,17 +131,22 @@ final class Selector implements Listener {
 
         final Location hit = event.getClickedBlock() == null ? null : event.getClickedBlock().getLocation();
         if (hit == null) return;
+        final org.bukkit.block.BlockFace face = event.getBlockFace();
         if (session.pos1 == null) {
             session.pos1 = hit;
+            session.face1 = face;
             Messages.ok(player, "第一个角: " + fmt(hit));
         } else if (session.pos2 == null) {
             session.pos2 = hit;
+            session.face2 = face;
             Messages.ok(player, "第二个角: " + fmt(hit));
             Messages.note(player, "用 /cineplay confirm <屏幕名字> 确认，或 /cineplay cancel 放弃");
         } else {
             // 已经两个点：再点一次就重来（换第一个角），避免玩家卡在错误状态
             session.pos1 = hit;
+            session.face1 = face;
             session.pos2 = null;
+            session.face2 = null;
             Messages.warn(player, "重新选点：第一个角已更新为 " + fmt(hit));
         }
     }

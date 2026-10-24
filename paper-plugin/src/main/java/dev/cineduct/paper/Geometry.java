@@ -2,27 +2,28 @@ package dev.cineduct.paper;
 
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.block.BlockFace;
 import org.bukkit.util.Vector;
 
 import java.util.Locale;
 
 /**
- * 把"两个对角点 + 玩家朝向"变成一个屏幕四边形的四个角。
+ * 把"两个对角点 + 点击到的方块面"变成一个屏幕四边形。
  *
- * <p>规则（与 {@code docs/paper-control-payload.md} §8.1 一致）：
+ * <p>规则：
  * <ul>
- *   <li>屏幕**面朝玩家**：法线是水平的，指向创建时玩家所在的那一侧；</li>
- *   <li>**俯仰固定 90°**：屏幕竖直摆放（上方向恒为世界 +Y），不跟随抬头/低头；</li>
- *   <li>两个点击点投影到这个平面上，取投影后的包围盒作为宽高 —— 于是"隔空点两下"
- *       也能得到一块尺寸合理的屏，而不是要求玩家精确对齐坐标。</li>
+ *   <li>屏幕所在的**平面**由点到的那一面决定（法线 = 方块面的朝向），不是玩家的朝向 ——
+ *       这样你站在哪儿点都不影响结果，量出来的就是墙上那块矩形；</li>
+ *   <li>屏幕**竖直摆放**（上方向恒为世界 +Y）；</li>
+ *   <li>两个点在这个平面内取包围盒：宽 = 水平方向的差，高 = Y 方向的差。</li>
  * </ul>
  *
- * <p>为什么让插件算、而不是把两个点丢给客户端：几何只算一次，所有客户端看到的完全一致；
- * 而且以后要加"斜放/拼接"只要改这里，协议还是四个角点。
+ * <p>★ 踩过的坑：早先用"玩家朝向"当法线，于是同一个墙面，你侧着站和正着站点出来的
+ * 屏幕宽度不一样（投影被余弦压缩），玩家看到的就是"大小跟服务端说的不一样"。
  */
 final class Geometry {
 
-    /** 屏幕最大边长（格）：超过这个值多半是点错了，直接拒绝比画一块巨大的屏好。 */
+    /** 屏幕最大边长（格）。 */
     static final double MAX_EDGE = 64.0;
     /** 最小边长：太小说明两次点在同一格上。 */
     static final double MIN_EDGE = 0.25;
@@ -30,29 +31,46 @@ final class Geometry {
     private Geometry() {
     }
 
-    /** 几何算不出来时抛 {@link IllegalArgumentException}（指令层转成红字提示）。 */
-    static Location[] corners(Location a, Location b, double playerYawDegrees) {
+    /**
+     * @param a    第一个点击点（方块坐标）
+     * @param faceA 第一个点所在的方块面
+     * @param b    第二个点击点
+     * @param faceB 第二个点所在的方块面
+     * @return 四角（环序：左上→右上→右下→左下，从屏幕正面看）
+     * @throws IllegalArgumentException 两个点不构成合法矩形
+     */
+    static Location[] corners(Location a, BlockFace faceA, Location b, BlockFace faceB) {
         if (a == null || b == null) throw new IllegalArgumentException("两个对角点还没选全");
         final World world = a.getWorld();
         if (world == null || b.getWorld() == null || !world.equals(b.getWorld())) {
             throw new IllegalArgumentException("两个点必须在同一个维度里");
         }
 
-        final Vector mid = a.toVector().add(b.toVector()).multiply(0.5);
-        // 水平法线：从屏幕中心指向玩家。玩家在屏幕哪一侧，就朝哪一侧看。
-        final double yawRad = Math.toRadians(playerYawDegrees);
-        // MC 的 yaw：0 = +Z 方向看，90 = -X。取"玩家看向的方向"反过来就是指向玩家。
-        final Vector look = new Vector(-Math.sin(yawRad), 0, Math.cos(yawRad)).normalize();
-        final Vector normal = look.multiply(-1.0);
-        if (normal.lengthSquared() < 1e-6) throw new IllegalArgumentException("朝向算不出来（玩家在屏幕正上方？）");
+        // 法线：优先用两次点击都落在的同一类面；都不一致就取第一个点的面。
+        final BlockFace face = pickFace(faceA, faceB);
+        final Vector normal = new Vector(face.getModX(), face.getModY(), face.getModZ());
+        if (normal.lengthSquared() < 0.5) throw new IllegalArgumentException("拿不到方块面朝向，请再点一次方块侧面");
 
-        // 右手系：右 = 上 × 法线，上 = 世界 +Y（俯仰固定 90°）
+        // 屏幕必须竖直：法线不能朝上/朝下（点到地面或天花板时给个明确提示，而不是画一块躺着的屏）
+        if (Math.abs(normal.getY()) > 0.5) {
+            throw new IllegalArgumentException("请点在**竖直的墙面上**（点到地面/天花板没法立屏）");
+        }
+
         final Vector up = new Vector(0, 1, 0);
-        final Vector right = up.clone().crossProduct(normal).normalize();
+        Vector right = up.clone().crossProduct(normal);
+        if (right.lengthSquared() < 1e-6) throw new IllegalArgumentException("朝向算不出来");
+        right.normalize();
 
-        final Vector delta = b.toVector().subtract(a.toVector());
-        final double width = Math.abs(delta.dot(right));
-        final double height = Math.abs(delta.dot(up));
+        /*
+         * 平面位置取两次点击在法线方向上的平均：点的是方块坐标（角点），
+         * 如果两次点到了墙的两面（一前一后），取中间而不是随便挑一个。
+         */
+        final double planeOffset = (a.toVector().dot(normal) + b.toVector().dot(normal)) / 2.0;
+
+        final double aRight = a.toVector().dot(right);
+        final double bRight = b.toVector().dot(right);
+        final double width = Math.abs(aRight - bRight);
+        final double height = Math.abs(a.getY() - b.getY());
         if (width < MIN_EDGE || height < MIN_EDGE) {
             throw new IllegalArgumentException(String.format(Locale.ROOT,
                     "选中的面积太小（%.2f × %.2f 格）：点两个**对角**，别点在同一个格子上", width, height));
@@ -62,15 +80,30 @@ final class Geometry {
                     "屏幕太大（%.1f × %.1f 格，上限 %.0f）", width, height, MAX_EDGE));
         }
 
-        final Vector halfRight = right.multiply(width / 2.0);
-        final Vector halfUp = up.multiply(height / 2.0);
-        // 环序：左上 → 右上 → 右下 → 左下（从屏幕正面看）
+        final double midRight = (aRight + bRight) / 2.0;
+        final double midY = (a.getY() + b.getY()) / 2.0;
+        final Vector center = right.clone().multiply(midRight).add(normal.clone().multiply(planeOffset))
+                .add(new Vector(0, midY, 0));
+        final Vector halfRight = right.clone().multiply(width / 2.0);
+        final Vector halfUp = up.clone().multiply(height / 2.0);
+
         return new Location[]{
-                at(world, mid.clone().subtract(halfRight).add(halfUp)),
-                at(world, mid.clone().add(halfRight).add(halfUp)),
-                at(world, mid.clone().add(halfRight).subtract(halfUp)),
-                at(world, mid.clone().subtract(halfRight).subtract(halfUp)),
+                at(world, center.clone().subtract(halfRight).add(halfUp)),
+                at(world, center.clone().add(halfRight).add(halfUp)),
+                at(world, center.clone().add(halfRight).subtract(halfUp)),
+                at(world, center.clone().subtract(halfRight).subtract(halfUp)),
         };
+    }
+
+    /** 两次点击的面：如果同轴（比如都是墙的南北面）就用它们，否则用第一个。 */
+    private static BlockFace pickFace(BlockFace a, BlockFace b) {
+        if (a == null) return b == null ? BlockFace.NORTH : b;
+        if (b == null) return a;
+        // 同一根轴（法线方向一致）才采用第一个；不同轴说明点歪了，仍然用第一个并靠后续校验兜住
+        final boolean sameAxis = (a.getModX() != 0) == (b.getModX() != 0)
+                && (a.getModY() != 0) == (b.getModY() != 0)
+                && (a.getModZ() != 0) == (b.getModZ() != 0);
+        return sameAxis ? a : b;
     }
 
     private static Location at(World world, Vector v) {

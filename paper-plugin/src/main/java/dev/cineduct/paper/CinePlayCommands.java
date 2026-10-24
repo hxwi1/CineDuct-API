@@ -304,7 +304,8 @@ final class CinePlayCommands {
         final Location[] points = this.plugin.selector().points(player);
         final Location[] corners;
         try {
-            corners = Geometry.corners(points[0], points[1], player.getLocation().getYaw());
+            final org.bukkit.block.BlockFace[] faces = this.plugin.selector().faces(player);
+            corners = Geometry.corners(points[0], faces[0], points[1], faces[1]);
         } catch (IllegalArgumentException e) {
             Messages.error(sender, e.getMessage());
             return 0;
