@@ -72,16 +72,21 @@ final class Geometry {
          * 平面位置取两次点击在法线方向上的平均：点的是方块坐标（角点），
          * 如果两次点到了墙的两面（一前一后），取中间而不是随便挑一个。
          */
-        final double planeOffset = (a.toVector().dot(normal) + b.toVector().dot(normal)) / 2.0;
-
         /*
-         * ★ 宽高要 +1：玩家点的是**方块**，不是顶点。
+         * 点击给的是**方块坐标**（最小角），要换成"方块中心"再算，屏幕才正好压在这几格上。
          *
-         * <p>点第 10 格和第 12 格，他圈到的是 10、11、12 三格（含首尾），而坐标差是 2 ——
-         * 少算一格正是"渲染出来比设置的少一格"。所以按"格数"算：差 + 1。
+         * <p>两件事：
+         *   * 水平/竖直方向：每个点 +0.5，于是"点第 10 格和第 12 格"的中心在 11.5，
+         *     跨度 = 差 + 1 = 3 格，正好覆盖 10~13 这一段；
+         *   * 法线方向：不能 +0.5（那样会把屏埋进墙里半格），而是取**点击到的那个面的外表面**
+         *     —— 正向面（SOUTH/EAST/UP）在坐标 +1 处，负向面就在坐标处。
          */
-        final double aRight = a.toVector().dot(right);
-        final double bRight = b.toVector().dot(right);
+        final double faceSign = normal.getX() + normal.getY() + normal.getZ();   // ±1
+        final double faceOffset = faceSign > 0 ? 1.0 : 0.0;
+        final double planeCoord = (a.toVector().dot(normal) + b.toVector().dot(normal)) / 2.0 + faceOffset;
+
+        final double aRight = a.toVector().dot(right) + 0.5;
+        final double bRight = b.toVector().dot(right) + 0.5;
         final double width = Math.abs(aRight - bRight) + 1.0;
         final double height = Math.abs(a.getY() - b.getY()) + 1.0;
         if (width < MIN_EDGE || height < MIN_EDGE) {
@@ -94,8 +99,8 @@ final class Geometry {
         }
 
         final double midRight = (aRight + bRight) / 2.0;
-        final double midY = (a.getY() + b.getY()) / 2.0;
-        final Vector center = right.clone().multiply(midRight).add(normal.clone().multiply(planeOffset))
+        final double midY = (a.getY() + b.getY()) / 2.0 + 0.5;
+        final Vector center = right.clone().multiply(midRight).add(normal.clone().multiply(planeCoord))
                 .add(new Vector(0, midY, 0));
         final Vector halfRight = right.clone().multiply(width / 2.0);
         final Vector halfUp = up.clone().multiply(height / 2.0);
