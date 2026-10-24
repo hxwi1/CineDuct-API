@@ -25,6 +25,9 @@ final class Geometry {
 
     /** 屏幕最大边长（格）。 */
     static final double MAX_EDGE = 64.0;
+    /** 屏幕浮出墙面的距离（格）：够拉开深度差消除 z-fighting，又看不出来。 */
+    static final double SURFACE_GAP = 0.1;
+
     /** 最小边长：太小说明两次点在同一格上。 */
     static final double MIN_EDGE = 0.25;
 
@@ -84,13 +87,14 @@ final class Geometry {
         /*
          * 平面 = 方块**外表面**再往法线方向推 0.5 格。
          *
-         * <p>为什么推 0.5：正好贴在墙面上会 z-fighting（闪烁、穿模）。推半格出去就从墙里浮出来，
-         * 侧面看也不明显。正向面（SOUTH/EAST/UP）的外表面在坐标 +1 处，负向面在坐标处。
+         * <p>为什么推出去：正好贴在墙面上会 z-fighting（闪烁、穿模）。推 0.1 格就够拉开深度差，
+         * 看起来仍然贴着墙；0.5 太明显（像悬空）。正向面（SOUTH/EAST/UP）外表面在坐标 +1 处，
+         * 负向面在坐标处。
          */
         final double faceSign = normal.getX() + normal.getY() + normal.getZ();   // ±1
         final double faceOffset = faceSign > 0 ? 1.0 : 0.0;
         final double planeCoord = (a.toVector().dot(normal) + b.toVector().dot(normal)) / 2.0
-                + faceOffset + 0.5;
+                + faceOffset + SURFACE_GAP;
 
         final double aRight = a.toVector().dot(right) + 0.5;
         final double bRight = b.toVector().dot(right) + 0.5;
