@@ -37,6 +37,7 @@ public final class CinePlayPlugin extends JavaPlugin {
     private final Map<UUID, Long> lastPlayAt = new ConcurrentHashMap<>();
 
     private CinePlayCommands commands;
+    private DurationLookup durations;
     private Screens screens;
     private Selector selector;
 
@@ -45,6 +46,7 @@ public final class CinePlayPlugin extends JavaPlugin {
         saveDefaultConfig();
         getServer().getMessenger().registerOutgoingPluginChannel(this, CHANNEL_CONTROL);
 
+        this.durations = new DurationLookup(this);
         this.screens = new Screens(this);
         this.screens.load();
         this.selector = new Selector(this);
@@ -161,6 +163,10 @@ public final class CinePlayPlugin extends JavaPlugin {
     // =====================================================================
     // 配件
     // =====================================================================
+
+    DurationLookup durations() {
+        return this.durations;
+    }
 
     Screens screens() {
         return this.screens;

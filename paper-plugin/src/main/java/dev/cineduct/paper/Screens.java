@@ -205,6 +205,20 @@ final class Screens {
         }
     }
 
+    /**
+     * 写回某一项的时长（异步查询回来的结果）。
+     *
+     * @return false = 这一项已经不在了（列表被改过），忽略即可
+     */
+    synchronized boolean setDuration(String screenName, int index, int seconds) {
+        final Screen screen = get(screenName);
+        if (screen == null || index < 0 || index >= screen.playlist.size()) return false;
+        while (screen.durations.size() <= index) screen.durations.add(0);
+        screen.durations.set(index, Math.max(0, seconds));
+        save();
+        return true;
+    }
+
     /** 定时任务调（每 20 秒）：把"正在播"的屏固化成锚点并落盘。 */
     synchronized void autosave() {
         boolean any = false;

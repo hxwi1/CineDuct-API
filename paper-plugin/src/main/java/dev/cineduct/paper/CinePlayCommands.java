@@ -338,11 +338,24 @@ final class CinePlayCommands {
             screen.index = 0;
             screen.positionMs = 0L;
         }
+        final int index = screen.playlist.size() - 1;
         this.plugin.screens().put(screen);
-        Messages.ok(sender, "已加入屏幕 " + screen.name + " 的播放列表（第 " + screen.playlist.size() + " 项）：" + shorten(url));
+        Messages.ok(sender, "已加入屏幕 " + screen.name + " 的播放列表（第 " + (index + 1) + " 项）：" + shorten(url));
         if (wasEmpty) {
             this.plugin.screens().broadcastAnchor(screen);
             Messages.note(sender, "开始播放第 1 项");
+        }
+        /*
+         * 时长：没手填就去 B 站查（公开接口，不需要登录）。
+         * 单向下行意味着"这条放完了"只能靠时长判断，所以这一步是自动推进的前提。
+         */
+        if (screen.durations.size() > index ? screen.durations.get(index) <= 0 : true) {
+            Messages.note(sender, "正在查询时长…（查到才会自动推进下一条）");
+            this.plugin.durations().fetch(url, (u, seconds) -> {
+                if (!this.plugin.screens().setDuration(screen.name, index, seconds)) return;
+                this.plugin.getLogger().info("时长已查到：" + Screens.safeUrl(u) + " = " + seconds + "s（"
+                        + screen.name + " 第 " + (index + 1) + " 项）");
+            });
         }
         return 1;
     }
