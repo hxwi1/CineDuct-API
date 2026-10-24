@@ -81,7 +81,16 @@ final class Geometry {
          *   * 法线方向：不能 +0.5（那样会把屏埋进墙里半格），而是取**点击到的那个面的外表面**
          *     —— 正向面（SOUTH/EAST/UP）在坐标 +1 处，负向面就在坐标处。
          */
-        final double planeCoord = (a.toVector().dot(normal) + b.toVector().dot(normal)) / 2.0 + 0.5;
+        /*
+         * 平面 = 方块**外表面**再往法线方向推 0.5 格。
+         *
+         * <p>为什么推 0.5：正好贴在墙面上会 z-fighting（闪烁、穿模）。推半格出去就从墙里浮出来，
+         * 侧面看也不明显。正向面（SOUTH/EAST/UP）的外表面在坐标 +1 处，负向面在坐标处。
+         */
+        final double faceSign = normal.getX() + normal.getY() + normal.getZ();   // ±1
+        final double faceOffset = faceSign > 0 ? 1.0 : 0.0;
+        final double planeCoord = (a.toVector().dot(normal) + b.toVector().dot(normal)) / 2.0
+                + faceOffset + 0.5;
 
         final double aRight = a.toVector().dot(right) + 0.5;
         final double bRight = b.toVector().dot(right) + 0.5;
