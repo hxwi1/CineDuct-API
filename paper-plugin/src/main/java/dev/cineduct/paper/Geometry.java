@@ -26,7 +26,7 @@ final class Geometry {
     /** 屏幕最大边长（格）。 */
     static final double MAX_EDGE = 64.0;
     /** 屏幕浮出墙面的距离（格）：够拉开深度差消除 z-fighting，又看不出来。 */
-    static final double SURFACE_GAP = 0.1;
+    static final double SURFACE_GAP = 1.1;
 
     /** 最小边长：太小说明两次点在同一格上。 */
     static final double MIN_EDGE = 0.25;
@@ -67,7 +67,7 @@ final class Geometry {
          * （和屏幕实体那条路踩过的 `180 - yaw` 是同一类坑）。
          */
         final Vector up = new Vector(0, 1, 0);
-        Vector right = normal.clone().crossProduct(up);
+        Vector right = up.clone().crossProduct(normal);
         if (right.lengthSquared() < 1e-6) throw new IllegalArgumentException("朝向算不出来");
         right.normalize();
 
