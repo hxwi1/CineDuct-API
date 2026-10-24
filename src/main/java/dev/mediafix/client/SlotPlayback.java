@@ -321,6 +321,9 @@ public final class SlotPlayback {
     }
 
     /** 按四个角点画一个四边形（QUADS 模式：环序写四个顶点）。 */
+    /** 诊断：每块屏第一次真的出画时打一条（排查"有几何没画面"用）。 */
+    private static final java.util.Set<String> DRAWN_ONCE = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     static void draw(SlotPlayback playback, Vec3 camera, PoseStack pose,
                      MultiBufferSource.BufferSource source) {
         final SlotScreen screen = playback.screen;
@@ -347,6 +350,11 @@ public final class SlotPlayback {
                 pose.popPose();
             }
             source.endBatch(renderType);
+            if (DRAWN_ONCE.add(playback.slot)) {
+                final Vec3[] cs = screen.corners();
+                CineDuct.LOGGER.info("[CineDuct] 虚拟屏 {} 首次出画：纹理={} alpha={} 四角={} {} {} {}",
+                        playback.slot, texture, playback.alpha(), fmt(cs[0]), fmt(cs[1]), fmt(cs[2]), fmt(cs[3]));
+            }
         } finally {
             playback.release();
         }

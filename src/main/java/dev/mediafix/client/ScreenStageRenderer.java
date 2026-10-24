@@ -119,7 +119,11 @@ public final class ScreenStageRenderer {
              * 服务端（Paper 插件）下发的**虚拟屏**：没有实体，只有四个角点。
              * 走同一个阶段、同一套 RenderType —— 所以光影/Sodium 那两条坑都不用重新踩。
              */
-            for (dev.mediafix.client.SlotPlayback slot : dev.mediafix.client.SlotPlayback.visible()) {
+            final java.util.List<dev.mediafix.client.SlotPlayback> slots = dev.mediafix.client.SlotPlayback.visible();
+            if (!slots.isEmpty() && System.currentTimeMillis() - diagLastAt >= 5000L) {
+                CineDuct.LOGGER.info("[CineDuct] 阶段渲染: 服务端虚拟屏 {} 块待画（玩家/纹理缺失的不算）", slots.size());
+            }
+            for (dev.mediafix.client.SlotPlayback slot : slots) {
                 final var screen = slot.screen();
                 if (screen == null) continue;
                 // 粗剔除：以中心为球心、半径 = 到最远角点（四边形用球剔除够用）
