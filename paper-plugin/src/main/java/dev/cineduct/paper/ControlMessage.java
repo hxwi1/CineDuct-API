@@ -77,6 +77,34 @@ public final class ControlMessage {
         return this;
     }
 
+    /** 维度 id（{@code place} 用），例如 {@code world} 或 {@code minecraft:overworld}。 */
+    public ControlMessage world(String value) {
+        put("world", value);
+        return this;
+    }
+
+    public ControlMessage live(boolean value) {
+        put("live", value);
+        return this;
+    }
+
+    public ControlMessage serverTimeMs(long value) {
+        put("serverTimeMs", value);
+        return this;
+    }
+
+    /**
+     * 塞一段**已经是 JSON** 的值（数组/对象）。
+     *
+     * <p>只给 {@code corners} 这种结构用：把它拆成 4 个字符串字段会让协议更难看。
+     * 调用方负责保证 {@code rawJson} 是合法 JSON —— 这里不校验（内部只有一处调用）。
+     */
+    public ControlMessage raw(String key, String rawJson) {
+        if (this.body.length() > 0) this.body.append(',');
+        this.body.append('"').append(key).append("\":").append(rawJson);
+        return this;
+    }
+
     public String op() {
         return this.op;
     }

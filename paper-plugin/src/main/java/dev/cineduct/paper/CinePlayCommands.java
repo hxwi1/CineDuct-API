@@ -16,6 +16,7 @@ import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Location;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
@@ -100,6 +101,44 @@ final class CinePlayCommands {
                     Messages.ok(ctx.getSource().getSender(), "配置已重载");
                     return 1;
                 }));
+
+        // ---- 建屏：create → 木锄点两角 → confirm <名字> / cancel ----
+        root.then(Commands.literal("create")
+                .requires(src -> src.getSender().hasPermission("cineplay.admin"))
+                .executes(ctx -> {
+                    final Player player = self(ctx);
+                    this.plugin.selector().begin(player);
+                    return 1;
+                }));
+
+        root.then(Commands.literal("cancel")
+                .executes(ctx -> {
+                    this.plugin.selector().cancel(self(ctx));
+                    return 1;
+                }));
+
+        root.then(Commands.literal("confirm")
+                .requires(src -> src.getSender().hasPermission("cineplay.admin"))
+                .then(Commands.argument("name", StringArgumentType.word())
+                        .executes(ctx -> confirm(ctx, StringArgumentType.getString(ctx, "name")))));
+
+        // ---- 播放列表 ----
+        root.then(Commands.literal("add")
+                .requires(src -> src.getSender().hasPermission("cineplay.admin"))
+                .then(Commands.argument("url", StringArgumentType.greedyString())
+                        .executes(ctx -> add(ctx, StringArgumentType.getString(ctx, "url")))));
+
+        root.then(Commands.literal("playlist").executes(ctx -> playlist(ctx)));
+
+        root.then(Commands.literal("next").executes(ctx -> step(ctx, true)));
+        root.then(Commands.literal("prev").executes(ctx -> step(ctx, false)));
+
+        root.then(Commands.literal("screens").executes(ctx -> listScreens(ctx)));
+
+        root.then(Commands.literal("remove")
+                .requires(src -> src.getSender().hasPermission("cineplay.admin"))
+                .then(Commands.argument("name", StringArgumentType.word())
+                        .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name")))));
 
         root.then(Commands.literal("help").executes(ctx -> help(ctx)));
 
@@ -215,6 +254,151 @@ final class CinePlayCommands {
         }
         Messages.error(sender, "没有发出去：客户端可能没装模组，或 cineduct-packet.json 里 requireChannel=true 而通道没通告");
         Messages.note(sender, "用 /cineplay status 看具体原因");
+    }
+
+    // =====================================================================
+    // 建屏 / 播放列表
+    // =====================================================================
+
+    /** {@code /cineplay confirm <名字>}：确认选区 → 算几何 → 下发。 */
+    private int confirm(CommandContext<CommandSourceStack> ctx, String name) throws CommandSyntaxException {
+        final Player player = self(ctx);
+        final CommandSender sender = ctx.getSource().getSender();
+
+        if (!Geometry.validName(name)) {
+            Messages.error(sender, "屏幕名字只能用 字母/数字/下划线/点/横线，1~32 个字符");
+            return 0;
+        }
+        if (!this.plugin.selector().hasBoth(player)) {
+            Messages.error(sender, "还没选好两个角：手持木锄右键点两个对角（/cineplay create 重新开始）");
+            return 0;
+        }
+        if (this.plugin.screens().get(name) != null) {
+            Messages.error(sender, "已经有叫 " + name + " 的屏幕了；换个名字，或先 /cineplay remove " + name);
+            return 0;
+        }
+
+        final Location[] points = this.plugin.selector().points(player);
+        final Location[] corners;
+        try {
+            corners = Geometry.corners(points[0], points[1], player.getLocation().getYaw());
+        } catch (IllegalArgumentException e) {
+            Messages.error(sender, e.getMessage());
+            return 0;
+        }
+
+        final Screens.Screen screen = this.plugin.screens().getOrCreate(name);
+        screen.corners = List.of(corners[0], corners[1], corners[2], corners[3]);
+        this.plugin.screens().put(screen);
+        this.plugin.selector().finish(player);
+
+        Messages.ok(sender, "屏幕 " + name + " 已创建：" + describe(corners));
+        Messages.note(sender, "接下来用 /cineplay add <链接> 往播放列表里加片子");
+        this.plugin.screens().broadcastPlace(screen);
+        return 1;
+    }
+
+    /** {@code /cineplay add <url>}：追加到当前屏幕的播放列表（空列表则立刻开始播）。 */
+    private int add(CommandContext<CommandSourceStack> ctx, String url) throws CommandSyntaxException {
+        final CommandSender sender = ctx.getSource().getSender();
+        final String name = targetScreenName(ctx.getSource());
+        final Screens.Screen screen = this.plugin.screens().get(name);
+        if (screen == null) {
+            Messages.error(sender, "找不到屏幕 " + name + "（/cineplay screens 看现有屏幕）");
+            return 0;
+        }
+        final boolean wasEmpty = screen.playlist.isEmpty();
+        screen.playlist.add(url);
+        if (wasEmpty) {
+            screen.index = 0;
+            screen.positionMs = 0L;
+        }
+        this.plugin.screens().put(screen);
+        Messages.ok(sender, "已加入播放列表（第 " + screen.playlist.size() + " 项）");
+        if (wasEmpty) {
+            this.plugin.screens().broadcastAnchor(screen);
+            Messages.note(sender, "开始播放第 1 项");
+        }
+        return 1;
+    }
+
+    private int playlist(CommandContext<CommandSourceStack> ctx) {
+        final CommandSender sender = ctx.getSource().getSender();
+        final Screens.Screen screen = this.plugin.screens().get(targetScreenName(ctx.getSource()));
+        if (screen == null) {
+            Messages.error(sender, "还没有这块屏幕");
+            return 0;
+        }
+        Messages.ok(sender, "屏幕 " + screen.name + " 的播放列表（当前第 " + (screen.index + 1) + " 项）");
+        for (int i = 0; i < screen.playlist.size(); i++) {
+            final String mark = i == Math.floorMod(screen.index, Math.max(1, screen.playlist.size())) ? " ▶ " : "   ";
+            Messages.note(sender, mark + (i + 1) + ". " + shorten(screen.playlist.get(i)));
+        }
+        if (screen.playlist.isEmpty()) Messages.note(sender, "（空）用 /cineplay add <链接> 添加");
+        return 1;
+    }
+
+    /** {@code /cineplay next} / {@code prev}：手动切一条并重新下发锚点。 */
+    private int step(CommandContext<CommandSourceStack> ctx, boolean forward) throws CommandSyntaxException {
+        final CommandSender sender = ctx.getSource().getSender();
+        final Screens.Screen screen = this.plugin.screens().get(targetScreenName(ctx.getSource()));
+        if (screen == null || screen.playlist.isEmpty()) {
+            Messages.error(sender, "这块屏幕还没有播放列表");
+            return 0;
+        }
+        final String url = forward ? screen.nextUrl() : screen.prevUrl();
+        screen.positionMs = 0L;
+        this.plugin.screens().put(screen);
+        this.plugin.screens().broadcastAnchor(screen);
+        Messages.ok(sender, "切到第 " + (screen.index + 1) + " 项：" + shorten(url));
+        return 1;
+    }
+
+    private int listScreens(CommandContext<CommandSourceStack> ctx) {
+        final CommandSender sender = ctx.getSource().getSender();
+        final List<String> names = this.plugin.screens().names();
+        if (names.isEmpty()) {
+            Messages.warn(sender, "还没有任何屏幕（/cineplay create 开始建一块）");
+            return 0;
+        }
+        Messages.ok(sender, "共 " + names.size() + " 块屏幕");
+        for (String name : names) {
+            final Screens.Screen s = this.plugin.screens().get(name);
+            Messages.note(sender, name + "：播放列表 " + s.playlist.size() + " 项"
+                    + (s.corners.isEmpty() ? "（几何未设置）" : "，第 " + (s.index + 1) + " 项"));
+        }
+        return 1;
+    }
+
+    private int remove(CommandContext<CommandSourceStack> ctx, String name) throws CommandSyntaxException {
+        final CommandSender sender = ctx.getSource().getSender();
+        final Screens.Screen screen = this.plugin.screens().get(name);
+        if (screen == null) {
+            Messages.error(sender, "没有叫 " + name + " 的屏幕");
+            return 0;
+        }
+        this.plugin.screens().remove(name);
+        // 让客户端把这块屏关掉（不发几何它就画不出来了，但播放器要显式关）
+        this.plugin.broadcastClose(name);
+        Messages.ok(sender, "已删除屏幕 " + name);
+        return 1;
+    }
+
+    /** 当前操作的屏幕名：`/cineplay slot` 设过的那个，否则配置默认。 */
+    private String targetScreenName(CommandSourceStack source) {
+        if (source.getSender() instanceof Player player) return this.plugin.slotOf(player);
+        return this.plugin.defaultSlot();
+    }
+
+    private static String describe(Location[] corners) {
+        final double w = corners[0].distance(corners[1]);
+        final double h = corners[1].distance(corners[2]);
+        return String.format(java.util.Locale.ROOT, "%.2f × %.2f 格", w, h);
+    }
+
+    private static String shorten(String url) {
+        if (url == null) return "";
+        return url.length() <= 72 ? url : url.substring(0, 72) + "…";
     }
 
     // =====================================================================

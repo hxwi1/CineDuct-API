@@ -43,12 +43,19 @@ public final class CinePlayPlugin extends JavaPlugin {
     private final Map<UUID, Long> lastPlayAt = new ConcurrentHashMap<>();
 
     private CinePlayCommands commands;
+    private Screens screens;
+    private Selector selector;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
         getServer().getMessenger().registerOutgoingPluginChannel(this, CHANNEL_CONTROL);
         getServer().getMessenger().registerIncomingPluginChannel(this, CHANNEL_STATE, this::onStateMessage);
+
+        this.screens = new Screens(this);
+        this.screens.load();
+        this.selector = new Selector(this);
+        getServer().getPluginManager().registerEvents(this.selector, this);
 
         this.commands = new CinePlayCommands(this);
         // Paper 插件的官方注册方式：/reload 之后会自动重新注册，不用手工处理
@@ -64,10 +71,37 @@ public final class CinePlayPlugin extends JavaPlugin {
     public void onDisable() {
         getServer().getMessenger().unregisterOutgoingPluginChannel(this, CHANNEL_CONTROL);
         getServer().getMessenger().unregisterIncomingPluginChannel(this, CHANNEL_STATE);
+        if (this.screens != null) this.screens.save();
         this.states.clear();
         this.stateAt.clear();
         this.slots.clear();
         this.lastPlayAt.clear();
+    }
+
+    Screens screens() {
+        return this.screens;
+    }
+
+    /** 让所有客户端把某个 slot 关掉（删屏幕时用：几何没了画不出来，但播放器要显式关）。 */
+    void broadcastClose(String slot) {
+        final String json = ControlMessage.of("close", slot).seq(nextSeq()).token(token()).json();
+        for (Player p : getServer().getOnlinePlayers()) sendControlJson(p, json);
+    }
+
+    Selector selector() {
+        return this.selector;
+    }
+
+    /** 发送一段已经拼好的 JSON（几何/锚点由 {@link Screens} 拼，字段多且结构固定）。 */
+    boolean sendControlJson(Player player, String json) {        if (player == null || json == null) return false;
+        final byte[] data = json.getBytes(StandardCharsets.UTF_8);
+        if (data.length > MAX_BYTES) {
+            getLogger().warning("报文过大（" + data.length + " 字节），已丢弃");
+            return false;
+        }
+        if (isRequireChannel() && !player.getListeningPluginChannels().contains(CHANNEL_CONTROL)) return false;
+        player.sendPluginMessage(this, CHANNEL_CONTROL, data);
+        return true;
     }
 
     // =====================================================================
@@ -167,6 +201,10 @@ public final class CinePlayPlugin extends JavaPlugin {
         final StateSnapshot snapshot = StateSnapshot.parse(new String(data, StandardCharsets.UTF_8));
         this.states.put(player.getUniqueId(), snapshot);
         this.stateAt.put(player.getUniqueId(), System.currentTimeMillis());
+        // 播放列表推进：客户端报 ENDED 就换下一项（Screens 内部有 3 秒去抖）
+        for (StateSnapshot.Slot slot : snapshot.slots()) {
+            if ("ENDED".equals(slot.state())) this.screens.noteEnded(slot.slot());
+        }
         if (logState()) {
             final StringBuilder sb = new StringBuilder("[state] ").append(player.getName());
             if (snapshot.err() != null && !snapshot.err().isEmpty()) sb.append("  err=").append(snapshot.err());
