@@ -56,8 +56,15 @@ final class Geometry {
             throw new IllegalArgumentException("请点在**竖直的墙面上**（点到地面/天花板没法立屏）");
         }
 
+        /*
+         * ★ 右方向 = normal × up，**不是** up × normal。
+         *
+         * <p>玩家是从方块外面点这面墙的，所以观察者在 +normal 一侧。
+         * 站在那一侧看，他的"右手边"是 normal × up；用反了整块屏会**左右镜像**
+         * （和屏幕实体那条路踩过的 `180 - yaw` 是同一类坑）。
+         */
         final Vector up = new Vector(0, 1, 0);
-        Vector right = up.clone().crossProduct(normal);
+        Vector right = normal.clone().crossProduct(up);
         if (right.lengthSquared() < 1e-6) throw new IllegalArgumentException("朝向算不出来");
         right.normalize();
 
