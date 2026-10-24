@@ -137,6 +137,8 @@
 | 指令 | 作用 |
 | --- | --- |
 | `/cineduct status` | 引擎、原生库、缓冲水位、解码路径、丢帧、自愈次数 |
+| `/cineduct packet status` | 服务端控制通道现状（闸门 / 白名单 / 当前由服务端创建的播放） |
+| `/cineduct packet test <json>` | 本地喂一条控制报文（跳过闸门，验收用） |
 | `/cineduct help` | 完整帮助（上面这些都在里面） |
 
 ---
@@ -191,6 +193,7 @@
 | --- | --- |
 | `cineduct-bili.json` | `cookie`：登录凭证（可手填覆盖扫码结果） |
 | `cineduct-log.json` | `dir`（默认 `cineductlogs`）/ `keepFiles`（10）/ `mirrorToMain`（true）/ `diagEnabled`（true） |
+| `cineduct-packet.json` | **服务端（Paper 插件）控制客户端播放**的闸门：`enabled`（默认 **false**）、`servers`（白名单，空 = 全拒）、`token`、`disabledOps`、`allowedHosts`、`maxPerSecond`（20）。协议见 [docs/paper-control-payload.md](docs/paper-control-payload.md) |
 
 ---
 
@@ -416,7 +419,9 @@ All files are created in the **game directory root** (not `config/`) and need a 
 **`cineduct-stream.json`**: `maxQn` (`-1` auto), `dashStreaming` (`true`), `highres` (`true`), `avoidAv1` (`true`),
 `audioPreference` (`dolby`), `streamOffsetMs` (`0`), `catchUpMaxMs` (`8000`), `noopSeekToleranceMs` (`1500`).
 
-**Others**: `cineduct-bili.json` (`cookie`), `cineduct-log.json` (`dir`, `keepFiles`, `mirrorToMain`, `diagEnabled`).
+**Others**: `cineduct-bili.json` (`cookie`), `cineduct-log.json` (`dir`, `keepFiles`, `mirrorToMain`, `diagEnabled`),
+`cineduct-packet.json` (server-side playback control gate — `enabled` defaults to **false**; see
+[docs/paper-control-payload.md](docs/paper-control-payload.md)).
 
 ---
 

@@ -1,6 +1,6 @@
 # 服务端（Paper 插件）控制客户端播放：自定义网络包契约
 
-> 状态：**接口已定稿，待实现**。本文只定义线上格式与语义，不定义实现；实现分两轮（先 Java，再 Java 侧 NeoForge 注册与处理，见 §9）。
+> 状态：**P0（客户端协议层）已实现**；P1 Paper 插件未开工，计划见 §9。
 > 目标场景：**服务端是 Paper**，用插件直接控制装了本模组的客户端播放。
 
 ---
@@ -28,14 +28,24 @@
 | `cineduct:control` | 服务端 → 客户端 | 控制指令（下面所有 op） |
 | `cineduct:state` | 客户端 → 服务端 | 状态回执（可选实现；插件不订阅也照常工作） |
 
-客户端侧注册入口（NeoForge 21.1，已确认这两个类存在于 `neoforge-21.1.231-universal.jar`）：
-
-- `net/neoforged/neoforge/network/event/RegisterPayloadHandlersEvent`
-- `net/neoforged/neoforge/network/registration/PayloadRegistrar`
+客户端侧注册入口：`RegisterPayloadHandlersEvent` + `PayloadRegistrar`（NeoForge 21.1），
+实现在 `src/main/java/dev/mediafix/net/CineDuctNetwork.java`。
 
 要点：
 - 载荷体就是"整段 JSON 的 UTF-8 字节"，不需要二进制结构对齐（这也是选 JSON 的原因：Paper 侧用 Gson 拼字符串即可，不需要共享结构体定义）。
 - **通道必须先由客户端注册并通告**，否则 Paper 发的包会被丢弃。插件侧发之前用 `player.getListeningPluginChannels()` 判断有没有 `cineduct:control`：没有 = 模组没装或版本低于本特性，直接跳过（不要报错刷屏）。
+
+### ★ 两个必须照做的实现细节（P0 实测代码里就是这么写的）
+
+1. **注册时必须是 `optional()`**。NeoForge 客户端连到非 NeoForge 服务器（Paper / 原版）时，
+   会拿"服务端没有任何通道"去协商客户端注册表；只要有一个**非 optional** 的通道，
+   客户端会**直接断开连接**（`NetworkRegistry.initializeOtherConnection`）。
+2. **编解码必须是裸字节**（读到底、写到底，不带长度前缀）。Paper 的 `sendPluginMessage` 发的是原样 UTF-8，
+   用 `ByteBufCodecs.STRING_UTF8` 会写出 VarInt 长度前缀，对面就解不出来。
+
+顺带一个结论，省得以后有人去找 Mixin：NeoForge 只为**已注册**的 payload id 装解码器；
+未注册的 id 在客户端会变成 `DiscardedPayload` 被原版忽略（**不会踢人**），
+所以服务端不需要装本模组，插件发的东西也能正常工作。
 
 ---
 
@@ -84,14 +94,15 @@
 
 一个客户端会连很多服务器；这个通道等于把"播放控制"交给了服务器。默认策略：
 
-| 闸门 | 默认 | 说明 |
+| 闸门 | 默认 | 配置键（`cineduct-packet.json`） |
 | --- | --- | --- |
-| 启用开关 | **关** | `cineduct-packet.json` 里 `enabled: true` 才接受任何包 |
-| 服务器白名单 | 空（= 全拒） | 按服务器地址（`host:port`）或服务器品牌+地址前缀匹配 |
-| 共享令牌 | 空 | 报文可带 `token`，与配置里的值比对（给"租服/公开服但只有自己插件能控"用） |
-| 域名白名单 | 仅 `bilibili.com` / `b23.tv` / `bilivideo.com` | `open` 的 `url` 只允许这些 host，防"恶意服让客户端去拉任意地址" |
-| 频率上限 | 20 条/秒/客户端 | 超了丢弃并回一条 `rate_limited` |
-| 生命周期 | 退服/换服即清 | 见 §7 |
+| 启用开关 | **关** | `enabled` |
+| 服务器白名单 | 空（= 全拒） | `servers`（地址包含匹配，所以写 `mc.example.com` 能匹配带端口的地址；单人游戏地址是 `singleplayer`） |
+| 共享令牌 | 空 | `token`（报文带同样的 `token` 才接受） |
+| 可禁用 op | 空 | `disabledOps`（例如 `["open"]`，租服只给控制权不给开播权） |
+| 域名白名单 | `bilibili.com` / `bilibili.tv` / `b23.tv` / `bilivideo.com` / `hdslb.com` | `allowedHosts`（后缀匹配） |
+| 频率上限 | 20 条/秒/客户端 | `maxPerSecond` |
+| 生命周期 | 退服/换服即清 | 代码侧行为，无配置 |
 
 闸门判定顺序：`enabled` → 地址白名单 → 令牌 → op 白名单（可配置禁用 `open`）→ URL 白名单 → 频率。
 
@@ -142,12 +153,81 @@
 
 ---
 
-## 9. 实施顺序
+## 9. 实施计划
 
-1. **本文定稿**（当前这一步）。
-2. **客户端注册与处理（Java）**：`RegisterPayloadHandlersEvent` 里注册 `cineduct:control`（`playToClient`）与 `cineduct:state`（`playToServer`）；`slot → CinePlayer` 映射表；闸门与限流；退服清理。
-3. **Paper 侧参考实现**：一个最小插件（`sendPluginMessage` + 通道可用性检查 + 令牌），作为文档附录，不进本模组产物。
-4. **渲染目标**：按 §8 选定后单独排期。
+分四期，前两期就能"用指令控制客户端播放"，第三期才谈"看见画面"。
+
+### P0 客户端协议层（本模组内，Java）—— ✅ 已实现
+
+新增包 `dev/mediafix/net/`，不碰现有播放代码（只调 `dev.mediafix.api.player` 那层公开 API）：
+
+| 文件 | 职责 |
+| --- | --- |
+| `CinePacketConfig` | `cineduct-packet.json` 读写（键见 §5） |
+| `CineGate` | 闸门判定链 + 1 秒滑窗限速；`summary()` 给状态面板 |
+| `CineControlPacket` | 报文解析/校验（`v`/`op`/`slot` 严格；未知字段忽略） |
+| `CineControlHandler` | op 分派 → `CinePlayer`；`slot → CinePlayer` 映射；退服清理；`snapshot()` 给回执 |
+| `CineStateUplink` | `cineduct:state`：open 成功、状态跳变、错误、2 秒心跳 |
+| `CineDuctNetwork` | payload 定义 + `optional()` 注册 + 裸字节编解码 |
+
+调试入口（**不需要 Paper 服务器就能验收**）：
+
+| 指令 | 作用 |
+| --- | --- |
+| `/cineduct packet` / `packet status` | 闸门现状（启用/白名单/令牌/域名/限速）+ 当前 slot 列表 |
+| `/cineduct packet test <json>` | 把一条报文喂给同一个处理器，**跳过闸门**（只做 op 验收） |
+| `/cineduct packet closeall` | 手动清掉所有服务端创建的播放 |
+
+生命周期：客户端监听 `ClientPlayerNetworkEvent.LoggingOut` → 关闭**全部服务端 slot**（§7）。
+玩家自己（指令/附属 mod）开的播放器不受影响。
+
+### P1 Paper 参考插件（新目录 `paper-plugin/`）
+
+Java 21 + `paper-api:1.21.1-R0.1-SNAPSHOT`，独立 gradle 项目，产物 `cineplay-<ver>.jar`，
+**不进本模组产物**（§9 原文约定：作为参考实现 + 文档）。
+
+| 内容 | 说明 |
+| --- | --- |
+| 指令 | `/cineplay play <url> [slot]`、`pause`、`resume`、`stop`、`seek <秒>`、`volume <0-100>`、`status`；权限 `cineplay.admin`（默认 OP） |
+| 发送 | `player.sendPluginMessage(plugin, "cineduct:control", bytes)`；发送前查 `player.getListeningPluginChannels()`，没装模组就跳过并提示（不刷错误） |
+| 配置 | `config.yml`：`token`、`defaultSlot`、`maxSlots` |
+| 上行 | `Messenger` 注册 `cineduct:state` 入站 → 写日志 + `/cineplay status` 显示位置/状态 |
+
+验收：本地 Paper 1.21.1 起服 → 装插件 → 客户端装模组 → 指令控制；**没装模组的玩家收到指令不报错**，
+`status` 里明确显示"该玩家客户端没有 cineduct:control 通道"。
+
+### P2 显示目标（决定"能不能看见画面"，§8 的 B 方案）
+
+`CinePlayer` 只给纹理，没人画就是一帧都看不见 —— Paper 侧没有渲染能力，所以画面必须在客户端出：
+
+- 新增客户端渲染目标：右下角 PiP / 全屏层二选一，`slot` 里编码位置（如 `hud:pip:br`、`hud:full`）；
+- 画法复用 `ScreenStageRenderer` 的四边形 + 信箱化逻辑，纹理来自 `CinePlayer.acquireDrawTexture`；
+- 生命周期跟随 slot：`close` 后不再画。
+
+验收：`/cineplay play` 后画面出现在指定位置；`stop` 后消失；`aspect` 改比例下一帧生效。
+
+### P3 同步播放（可选，影院效果）
+
+多人服"所有人同一进度"：`open`/`sync` 里带 `positionMs` + 服务端时刻，客户端按锚点起播
+（思路同 `ScreenEntity.projectedPositionMs`：只在锚点变化时对齐，不每帧纠偏）。
+不在 P0/P1 范围，想要再加。
+
+### 工作量与顺序
+
+| 期 | 内容 | 估算 | 风险 |
+| --- | --- | --- | --- |
+| P0 | 协议层 + 闸门 + 调试指令 | 1~1.5 天 | 低（全在客户端，可本地验收） |
+| P1 | Paper 插件 | 0.5~1 天 | 低（要起一个本地 Paper 服才能端到端测） |
+| P2 | 内置显示目标 | 1~2 天 | 中（GL 绘制 + 纹理生命周期，容易漏 release） |
+| P3 | 同步播放 | 0.5~1 天 | 中（时钟语义，容易做成"每帧纠偏"） |
+
+### 已知风险
+
+- **通道必须由客户端先注册**：插件发之前必须查 `getListeningPluginChannels()`，否则包被静默丢弃。
+- **单包上限**：Bukkit 自定义通道单包约 32 KB；本协议只传指令与 URL，正常远低于此 —— 但仍要在插件侧截断超长 URL 并报错。
+- **安全默认全关**：`enabled=false` 时**任何包都不接受**。这条不能为了"方便测试"改默认值。
+- **不要伪造播放器身份**：报文里没有、也不该有子进程 pid / UUID（§10）。
+
 
 ---
 

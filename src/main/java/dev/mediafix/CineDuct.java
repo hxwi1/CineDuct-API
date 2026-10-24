@@ -81,6 +81,8 @@ public final class CineDuct {
             StreamConfig.load();
             FfmpegConfig.load();
             BiliConfig.load();
+            // 服务端控制通道（Paper 插件 → 客户端）：默认全关，见 docs/paper-control-payload.md
+            dev.mediafix.net.CinePacketConfig.load();
             // 账号权限（清晰度/音轨上限）：先按缓存走，后台查一次 nav；登录/退出时会重新查。
             // 设置界面重建时同步读缓存，所以这里预热一次能避免"刚进游戏那一页上限偏低"。
             dev.mediafix.bili.BiliEntitlements.refreshAsync();
@@ -93,6 +95,8 @@ public final class CineDuct {
             buses.addListener(CineDuct::onServerStopped);
             buses.addListener(CineDuct::onClientTick);
             buses.addListener(CineDuct::onPlayerLoggedIn);
+            // 退服/换服：清掉所有由服务端（Paper 插件）创建的播放 —— 不能"已经退服了还在放"
+            buses.addListener(CineDuct::onClientLoggingOut);
             StringBuilder resolverNames = new StringBuilder();
             for (dev.mediafix.api.MediaSourceResolver r : SourceResolvers.all()) {
                 if (resolverNames.length() > 0) resolverNames.append(", ");
@@ -186,6 +190,24 @@ public final class CineDuct {
                                 .executes(ctx -> showTransportStatus(ctx.getSource()))))
                 .then(net.minecraft.commands.Commands.literal("status")
                         .executes(ctx -> showStatus(ctx.getSource())))
+                /*
+                 * 服务端控制通道（Paper 插件 → 客户端）的调试入口。
+                 *
+                 * <p>没有它，验收这条通道就必须先起一个 Paper 服务器；有了它，
+                 * 同一条"解析 → 分派 → 回执"路径可以在游戏里直接喂报文。
+                 */
+                .then(net.minecraft.commands.Commands.literal("packet")
+                        .executes(ctx -> showPacketStatus(ctx.getSource()))
+                        .then(net.minecraft.commands.Commands.literal("status")
+                                .executes(ctx -> showPacketStatus(ctx.getSource())))
+                        .then(net.minecraft.commands.Commands.literal("closeall")
+                                .executes(ctx -> packetCloseAll(ctx.getSource())))
+                        .then(net.minecraft.commands.Commands.literal("test")
+                                .then(net.minecraft.commands.Commands.argument("json",
+                                                com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(ctx -> packetTest(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType
+                                                        .getString(ctx, "json"))))))
                 .then(net.minecraft.commands.Commands.literal("player")
                         .executes(ctx -> showPlayers(ctx.getSource()))
                         .then(net.minecraft.commands.Commands.literal("list")
@@ -364,12 +386,29 @@ public final class CineDuct {
             Sessions.drainGlRelease();
             // 子进程崩了/卡死了就自动重启（判定很便宜，重启在后台线程）
             Sessions.tickHealth();
+            // 服务端控制通道的状态回执（心跳 / 状态跳变；没启用时是一次空判断）
+            dev.mediafix.net.CineStateUplink.tick();
         } catch (Throwable t) {
             LOGGER.warn("[CineDuct] 清理屏幕客户端状态失败", t);
         }
     }
 
     private static boolean levelWasLoaded;
+
+    /**
+     * 退服 / 换服：把服务端控制通道开出来的播放全部关掉。
+     *
+     * <p>为什么必须有：{@code CinePlayer} 的生命周期本来由调用方管，而这里的调用方是
+     * "已经离开的那个服务器" —— 不断开就会留下"退服了还在放"的会话（还占着声卡）。
+     */
+    private static void onClientLoggingOut(
+            net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent.LoggingOut event) {
+        try {
+            dev.mediafix.net.CineControlHandler.closeAll("退服/换服");
+        } catch (Throwable t) {
+            LOGGER.warn("[CineDuct] 退服清理服务端播放失败", t);
+        }
+    }
 
     /** 进世界后：收紧 Cookie 文件权限，并一次性提示登录态仅限本账号、勿外传。 */
     private static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
@@ -837,8 +876,41 @@ public final class CineDuct {
         return ok ? 1 : 0;
     }
 
-    /** /cineduct status —— 只读状态：引擎常开，这里只报告原生库与开关情况。 */    private static int showStatus(CommandSourceStack source) {
-        sendSuccess(source, "[CineDuct] 自研引擎: 常开（不可关闭 —— 关掉就没法播 B 站内容）"
+    /**
+     * `/cineduct packet` —— 服务端控制通道现状：闸门判定链 + 当前由服务端创建的播放。
+     *
+     * <p>排查"为什么纸片服发过来的控制没反应"时先看这一行：多数情况是 `enabled=false`
+     * 或者服务器地址不在白名单里（默认白名单为空 = 全拒）。
+     */
+    private static int showPacketStatus(CommandSourceStack source) {
+        sendSuccess(source, "[CineDuct] 服务端控制通道: " + dev.mediafix.net.CineGate.summary());
+        sendSuccess(source, "[CineDuct]   服务端 slot=" + dev.mediafix.net.CineControlHandler.slotCount()
+                + "  最近 ack=" + dev.mediafix.net.CineControlHandler.lastAckSeq()
+                + "  配置: <游戏目录>/cineduct-packet.json");
+        for (dev.mediafix.net.CineControlHandler.Snapshot s : dev.mediafix.net.CineControlHandler.snapshot()) {
+            sendSuccess(source, "[CineDuct]   slot=" + s.slot() + " " + s.state()
+                    + "  位置=" + s.positionMs() + "ms  传输=" + s.transport()
+                    + (s.err() == null || s.err().isEmpty() ? "" : "  错误=" + s.err()));
+        }
+        sendSuccess(source, "[CineDuct]   本地调试: /cineduct packet test <json>（跳过闸门，仅验收用）");
+        return 1;
+    }
+
+    /** `/cineduct packet closeall` —— 手动清掉所有服务端创建的播放。 */
+    private static int packetCloseAll(CommandSourceStack source) {
+        dev.mediafix.net.CineControlHandler.closeAll("玩家手动清理");
+        sendSuccess(source, "[CineDuct] 已关闭全部由服务端创建的播放");
+        return 1;
+    }
+
+    /** `/cineduct packet test <json>` —— 本地喂一条报文（跳过闸门，走同一条处理路径）。 */
+    private static int packetTest(CommandSourceStack source, String json) {
+        dev.mediafix.net.CineControlHandler.handleLocal(json);
+        sendSuccess(source, "[CineDuct] 已把报文喂给处理器（**跳过闸门**，只用于本地验收）");
+        return 1;
+    }
+
+    /** /cineduct status —— 只读状态：引擎常开，这里只报告原生库与开关情况。 */    private static int showStatus(CommandSourceStack source) {        sendSuccess(source, "[CineDuct] 自研引擎: 常开（不可关闭 —— 关掉就没法播 B 站内容）"
                 + " | 原生库: " + FfmpegRuntime.status());
         // 原生库不可用时顺手重试一次：临时性失败（DLL 被杀软短暂锁定、解压被中断）不用重启游戏
         if (!FfmpegRuntime.available()) {
