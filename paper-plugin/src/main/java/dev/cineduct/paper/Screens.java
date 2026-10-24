@@ -316,10 +316,24 @@ final class Screens {
         }
     }
 
+    /**
+     * 屏幕所在维度 → **客户端认的维度 id**。
+     *
+     * <p>★ 这里踩过一次：Bukkit 的 {@code World#getName()} 是**世界名**（存档目录名，通常就叫
+     * {@code world}），而客户端比较的是**维度 id**（{@code minecraft:overworld}）。
+     * 发世界名过去永远不会相等，客户端那句"不在这个维度就把播放关掉"于是每次都命中 ——
+     * 表现就是"几何收到、画面永远不出来"。
+     */
     private static String worldOf(Screen screen) {
         if (screen.corners.isEmpty()) return "minecraft:overworld";
         final Location first = screen.corners.getFirst();
-        return first.getWorld() == null ? "minecraft:overworld" : first.getWorld().getName();
+        final World world = first.getWorld();
+        if (world == null) return "minecraft:overworld";
+        return switch (world.getEnvironment()) {
+            case NETHER -> "minecraft:the_nether";
+            case THE_END -> "minecraft:the_end";
+            default -> "minecraft:overworld";
+        };
     }
 
     // =====================================================================
