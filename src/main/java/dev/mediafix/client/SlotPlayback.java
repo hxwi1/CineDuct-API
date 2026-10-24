@@ -338,26 +338,80 @@ public final class SlotPlayback {
             try {
                 pose.translate(-camera.x, -camera.y, -camera.z);
                 final PoseStack.Pose last = pose.last();
-                final Vec3[] corners = screen.corners();
+                // 信箱化：视频比例 ≠ 屏幕比例时缩视频、留真黑边（不拉伸）
+                final Vec3[] quad = letterboxed(screen.corners(), playback.videoAspect());
                 final float brightness = playback.brightness();
                 final float alpha = playback.alpha();
                 // 环序：左上 → 右上 → 右下 → 左下
-                ScreenQuad.emit3(consumer, last, corners[0], 0.0f, 0.0f, brightness, alpha);
-                ScreenQuad.emit3(consumer, last, corners[1], 1.0f, 0.0f, brightness, alpha);
-                ScreenQuad.emit3(consumer, last, corners[2], 1.0f, 1.0f, brightness, alpha);
-                ScreenQuad.emit3(consumer, last, corners[3], 0.0f, 1.0f, brightness, alpha);
+                ScreenQuad.emit3(consumer, last, quad[0], 0.0f, 0.0f, brightness, alpha);
+                ScreenQuad.emit3(consumer, last, quad[1], 1.0f, 0.0f, brightness, alpha);
+                ScreenQuad.emit3(consumer, last, quad[2], 1.0f, 1.0f, brightness, alpha);
+                ScreenQuad.emit3(consumer, last, quad[3], 0.0f, 1.0f, brightness, alpha);
             } finally {
                 pose.popPose();
             }
             source.endBatch(renderType);
             if (DRAWN_ONCE.add(playback.slot)) {
                 final Vec3[] cs = screen.corners();
-                CineDuct.LOGGER.info("[CineDuct] 虚拟屏 {} 首次出画：纹理={} alpha={} 四角={} {} {} {}",
-                        playback.slot, texture, playback.alpha(), fmt(cs[0]), fmt(cs[1]), fmt(cs[2]), fmt(cs[3]));
+                CineDuct.LOGGER.info("[CineDuct] 虚拟屏 {} 首次出画：纹理={} alpha={} 视频比例={} 四角={} {} {} {}",
+                        playback.slot, texture, playback.alpha(),
+                        String.format(java.util.Locale.ROOT, "%.3f", playback.videoAspect()),
+                        fmt(cs[0]), fmt(cs[1]), fmt(cs[2]), fmt(cs[3]));
             }
         } finally {
             playback.release();
         }
+    }
+
+    /** 视频宽高比（未知时 0）。 */
+    private float videoAspect() {
+        final CinePlayer p = this.player;
+        if (p == null) return 0.0f;
+        final int w = p.videoWidth();
+        final int h = p.videoHeight();
+        if (w > 0 && h > 0) return (float) w / h;
+        return p.drawAspect() > 0.01f ? p.drawAspect() : 0.0f;
+    }
+
+    /**
+     * 信箱化：把视频按它的宽高比放进给定的屏幕矩形，多出来的地方**不画**（露出来的就是世界里/黑边）。
+     *
+     * <p>为什么必须在这里做：这四个角点是屏幕的物理面，视频比例和它不一致时
+     * 拉满就是"人变胖"。与屏幕实体那条路（{@code ScreenQuad.corners} 的 LETTERBOX）同一语义，
+     * 只是那边是本地矩形、这边是世界坐标四角，所以另外算一遍。
+     */
+    private static Vec3[] letterboxed(Vec3[] corners, float videoAspect) {
+        if (videoAspect <= 0.01f) return corners;          // 比例未知：先铺满，等有画面再说
+        final Vec3 leftTop = corners[0];
+        final Vec3 rightTop = corners[1];
+        final Vec3 leftBottom = corners[3];
+        final double screenWidth = leftTop.distanceTo(rightTop);
+        final double screenHeight = leftTop.distanceTo(leftBottom);
+        if (screenWidth <= 1e-4 || screenHeight <= 1e-4) return corners;
+        final double screenAspect = screenWidth / screenHeight;
+        if (Math.abs(screenAspect - videoAspect) < 0.01) return corners;
+
+        final Vec3 center = leftTop.add(rightTop).add(corners[2]).add(leftBottom).scale(0.25);
+        final Vec3 halfWidth = rightTop.subtract(leftTop).scale(0.5);
+        final Vec3 halfHeight = leftBottom.subtract(leftTop).scale(0.5);
+        if (videoAspect > screenAspect) {
+            // 视频更宽 → 压高度（上下留空）
+            final Vec3 v = halfHeight.scale(screenAspect / videoAspect);
+            return new Vec3[]{
+                    center.subtract(halfWidth).add(v),
+                    center.add(halfWidth).add(v),
+                    center.add(halfWidth).subtract(v),
+                    center.subtract(halfWidth).subtract(v),
+            };
+        }
+        // 视频更高 → 压宽度（左右留空）
+        final Vec3 h = halfWidth.scale(videoAspect / screenAspect);
+        return new Vec3[]{
+                center.subtract(h).add(halfHeight),
+                center.add(h).add(halfHeight),
+                center.add(h).subtract(halfHeight),
+                center.subtract(h).subtract(halfHeight),
+        };
     }
 
     private static String fmt(Vec3 v) {
