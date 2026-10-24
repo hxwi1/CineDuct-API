@@ -170,6 +170,13 @@ VideoPipeline::VideoPipeline(const FfmpegApi& api, GpuDevice& gpu, PipelineConfi
     this->volumePercent.store(this->config.volume);
     this->loopWanted.store(this->config.loop);
     this->cpuFrame = api.av_frame_alloc();
+    /*
+     * 缓冲深度：按**媒体时长**限深，而不是按包数。
+     *
+     * <p>见 docs/PLAN-preload-buffer.md 的 L1：60 包 ≈ 1 秒，网络一抖就抽干；
+     * 改成"首尾 PTS 差到 bufferTargetMs 才停读"，下载侧才真正领先播放位置若干秒。
+     */
+    this->packets.setSpanTargetMs(this->config.bufferTargetMs);
 }
 
 VideoPipeline::~VideoPipeline() {
@@ -443,8 +450,17 @@ void VideoPipeline::demuxLoop() {
             }
             this->awaitingFirstPacketAfterSeek.store(false);
         }
+        /*
+         * 给包队列一个"这个包在时间轴上的位置"：队列靠它算 PTS 跨度，
+         * 也就是"网络侧已经提前缓存了几秒"。用容器原始毫秒即可（跨度只看差值，
+         * 减不减 ptsBaseMs 结果一样）。
+         */
+        const long long pktPtsMs = packet->pts == AV_NOPTS_VALUE
+                ? -1
+                : this->api.av_rescale_q(packet->pts, this->videoStream->time_base,
+                                         AVRational{1, 1000});
         const PacketQueue::PushResult pushed =
-                this->packets.push(packet, this->seek.demuxDone.load());
+                this->packets.push(packet, this->seek.demuxDone.load(), pktPtsMs);
         if (pushed == PacketQueue::PushResult::Aborted) {
             this->api.av_packet_unref(packet);
             break;
@@ -887,6 +903,12 @@ void VideoPipeline::renderSeekStage() {
     const uint64_t generation = this->seek.generation.load();
     const long long target = this->seek.targetMs.load();
 
+    /*
+     * 定位优先于闸门：seek 是用户的明确意图，必须先把"等缓存"收掉（不还原播放状态，
+     * 由下面的流程与 beginEpoch 决定声卡什么时候起）。
+     */
+    if (this->gateActive.load()) this->leaveGate(false);
+
     // 时钟先作废：新纪元的第一帧到达时才重新锚定（见 beginEpoch）
     this->clock.invalidate();
     this->epochStartPending = true;
@@ -1292,6 +1314,26 @@ void VideoPipeline::updateStatus() {
         }
         this->shared.status->decodeMode = mode;
         this->shared.status->buffering = this->buffering.load() ? 1u : 0u;
+        /*
+         * v11：缓冲水位与"等缓存"状态。
+         *
+         * <p>上层据此能做两件以前做不到的事：① 显示"预缓冲 1.2/3.0 秒"而不是一个不知道
+         * 会不会好的转圈；② 区分"网络没供上"（packetBufferMs 低）与"游戏没在取帧"
+         * （consumerStallMs 高）—— 这两种卡顿的处理方式完全不同。
+         */
+        this->shared.status->packetBufferMs = static_cast<uint32_t>(
+                std::max(0, this->packetBufferMs()));
+        this->shared.status->frameBufferMs = static_cast<uint32_t>(
+                std::max(0, this->frameBufferMs()));
+        this->shared.status->bufferLevelMs = static_cast<uint32_t>(
+                std::max(0, this->bufferLevelMs()));
+        this->shared.status->bufferTargetMs = static_cast<uint32_t>(
+                std::max(0, this->config.bufferTargetMs));
+        this->shared.status->gateActive = this->gateActive.load() ? 1u : 0u;
+        this->shared.status->gateCount = this->gateCount.load();
+        this->shared.status->consumerStallMs = this->consumerStallMs.load();
+        this->shared.status->prerollMs = this->prerollWaitedMs.load();
+        this->shared.status->gateTotalMs = this->gateTotalMs.load();
         this->shared.status->seekHealCount = this->seekHealCount.load();
         this->shared.status->droppedLate = static_cast<uint64_t>(this->droppedLateCount.load());
         /*
@@ -1373,6 +1415,11 @@ void VideoPipeline::injectDebugAudioLag() {
 void VideoPipeline::checkAudioVideoOffset() {
     if (!this->audioActive.load() || this->audio == nullptr) return;   // 没音频就无所谓音画
     if (this->paused.load()) return;
+    /*
+     * 闸门期间不判偏移：这是一次**受控的暂停**（位置被冻住），
+     * 期间的读数都在收敛，此时去"纠正"就是追自己的假象。
+     */
+    if (this->gateActive.load()) return;
     const auto now = std::chrono::steady_clock::now();
     if (now - this->lastAvCheckAt < std::chrono::milliseconds(500)) return;
     this->lastAvCheckAt = now;
@@ -1628,6 +1675,14 @@ void VideoPipeline::maybeRepairAudio() {
         return;
     }
     /*
+     * 闸门（等缓存/等客户端取帧）期间声卡是停着的，内容位置不前进是**预期**行为，
+     * 不能当成"音频僵死"去修 —— 那会在每次卡顿时都发一次 seek，把缓冲全清掉。
+     */
+    if (this->gateActive.load()) {
+        this->audioStuckSince = std::chrono::steady_clock::time_point{};
+        return;
+    }
+    /*
      * ★★ 片尾待命时**绝不修**（2026-10-18 现场，玩家看到的"有规律地重新播放/重启"）。
      *
      * <p>未循环放完时的链路状态是：视频链 EOF → {@link #idleAfterEnd} 把状态环的 ended 置 1
@@ -1838,6 +1893,253 @@ int VideoPipeline::run() {
     return ok ? 0 : 1;
 }
 
+// ===========================================================================
+// 缓冲水位与"等缓存"闸门（v11，见 docs/PLAN-preload-buffer.md）
+// ===========================================================================
+
+int VideoPipeline::packetBufferMs() const {
+    return this->packets.spanMs();
+}
+
+int VideoPipeline::frameBufferMs() const {
+    /*
+     * 已解码未呈现的帧折算成时长。
+     *
+     * <p>用"帧数 × 帧间隔"估就够（呈现侧只需要一个量级）：帧队列容量只有 3，
+     * 这项最多贡献 ~50~120ms，真正的水位在包队列那侧。
+     */
+    const size_t queued = this->frames.size();
+    if (queued == 0) return 0;
+    double fps = this->videoStream != nullptr ? av_q2d(this->videoStream->avg_frame_rate) : 0.0;
+    if (!(fps > 1.0) || fps > 240.0) fps = 24.0;
+    const int perFrameMs = static_cast<int>(1000.0 / fps);
+    const int total = perFrameMs * static_cast<int>(queued);
+    return total > 5000 ? 5000 : total;
+}
+
+int VideoPipeline::bufferLevelMs() const {
+    return this->packetBufferMs() + this->frameBufferMs();
+}
+
+void VideoPipeline::pollConsumerProgress() {
+    using namespace cineduct::spike;
+    if (this->shared.status == nullptr || this->shared.slotCount == 0) return;
+    const auto now = std::chrono::steady_clock::now();
+    bool progressed = false;
+    for (uint32_t i = 0; i < this->shared.slotCount; ++i) {
+        Status* st = this->shared.status;
+        const uint32_t state = reinterpret_cast<std::atomic<uint32_t>*>(&st->slot[i].state)
+                                       ->load(std::memory_order_acquire);
+        if (state != kSlotShown) continue;
+        const uint32_t gen = st->slot[i].generation;
+        if (gen == this->lastConsumedGeneration) continue;
+        /*
+         * 消费者把某个槽标成 SHOWN 且帧号变了 = 它刚取走一帧。
+         *
+         * <p>这是**唯一**能客观判断"游戏侧还在不在取帧"的信号（跨进程，零 IPC）：
+         * 所有槽都停在 READY 就说明没人来拷 —— 那正是"客户端卡顿"。
+         */
+        this->lastConsumedGeneration = gen;
+        progressed = true;
+    }
+    if (progressed) {
+        this->lastConsumerProgressAt = now;
+        this->consumerEverSeen = true;
+        this->consumerStallMs.store(0);
+        return;
+    }
+    if (!this->consumerEverSeen) {
+        // 还没人取过帧（没人在看这块屏）：不判卡顿，否则会一直冻着
+        this->consumerStallMs.store(0);
+        return;
+    }
+    const auto stalled = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - this->lastConsumerProgressAt).count();
+    const uint32_t clamped = stalled < 0 ? 0u : (stalled > 600000 ? 600000u
+                                                                  : static_cast<uint32_t>(stalled));
+    this->consumerStallMs.store(clamped);
+}
+
+bool VideoPipeline::evaluateBufferGate() {
+    using clock = std::chrono::steady_clock;
+    const auto now = clock::now();
+
+    // 暂停 / 片尾 / 停止：不闸门（暂停本来就冻着，片尾要停在最后一帧）
+    const bool ended = this->shared.status != nullptr && this->shared.status->ended != 0u;
+    if (this->paused.load() || this->stopNow() || ended) {
+        /*
+         * ★ 这里**不能**用 leaveGate() 的默认行为。
+         *
+         * <p>默认会 "clock.setPaused(false) + audioSink.setPaused(false)"，
+         * 而此刻用户刚按下暂停（声卡已经停了）—— 那样等于把暂停又顶开，声音会继续响。
+         * 所以只解除闸门状态、不碰播放。
+         */
+        if (this->gateActive.load()) this->leaveGate(false);
+        return false;
+    }
+
+    const int target = this->config.bufferTargetMs > 0 ? this->config.bufferTargetMs : 0;
+    const int level = this->bufferLevelMs();
+    const int supplyLow = target > 0 ? std::max(600, target / 3) : 600;
+    const int supplyHigh = target > 0 ? std::max(supplyLow + 400, target * 3 / 4) : 1200;
+
+    /*
+     * ---- ① 起播预缓冲 ----
+     *
+     * 还没出过任何画面时，先让队列攒够 prerollMs 再放第一帧。
+     * 这一步**不动时钟**（此时时钟还没锚定，声卡也还按着），只是"先不取帧"。
+     *
+     * <p>两个条件都要满足：水位够 **且** 已经有一帧解码好了 —— 只看水位会在
+     * "包全下完了、解码线程还没出帧"的那几轮里反复判定（实测会连打四行日志）。
+     */
+    if (!this->prerollDone && this->publishedCount.load() == 0 && this->config.prerollMs > 0
+        && !this->gateActive.load() && !this->demuxAtEof.load()) {
+        if (this->prerollSince == clock::time_point{}) this->prerollSince = now;
+        /*
+         * 预缓冲门限不能超过"能存下的水位"。
+         *
+         * <p>实测陷阱：`--buffer-target-ms 400` 而 preroll 还是默认 1500 时，
+         * 队列永远攒不到 1500ms（跨度上限就在 400），于是一直等到兜底上限
+         * （1500+2500=4 秒）才起播 —— 白等 4 秒。
+         */
+        const int prerollTarget = target > 0
+                ? std::min(this->config.prerollMs, std::max(300, target * 2 / 3))
+                : this->config.prerollMs;
+        const long long waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - this->prerollSince).count();
+        // 上限：宁可少攒也不能让起播无限推迟
+        const int waitCapMs = prerollTarget + 2500;
+        const bool enough = level >= prerollTarget && this->frames.size() > 0;
+        if (!enough && waitedMs < waitCapMs) {
+            this->buffering.store(true);
+            this->prerollWaitedMs.store(static_cast<uint32_t>(waitedMs < 0 ? 0 : waitedMs));
+            return true;
+        }
+        this->prerollDone = true;
+        this->prerollWaitedMs.store(static_cast<uint32_t>(waitedMs < 0 ? 0 : waitedMs));
+        std::printf("[host] 起播预缓冲完成: 水位 %dms（目标 %dms，等待 %lldms）\n",
+                    level, prerollTarget, waitedMs);
+    }
+
+    // ---- ② 闸门进行中：判断能不能退 ----
+    if (this->gateActive.load()) {
+        const uint32_t stall = this->consumerStallMs.load();
+        const long long gatedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - this->gateSince).count();
+        /*
+         * 供给侧的退出条件。
+         *
+         * <p>`frames.size() >= 2` 也算"够了"：闸门的目的是"别让位置跑在没有数据的前面"，
+         * 一旦已经解出两帧可出，继续冻着只是白白拖延。慢速网（水位永远到不了高水位）
+         * 靠这一条才不会每次都冻满 6 秒。
+         */
+        const bool supplyOk = level >= supplyHigh || this->frames.size() >= 2
+                || this->demuxAtEof.load();
+        const bool consumerOk = this->config.stallGateMs <= 0
+                || stall < static_cast<uint32_t>(std::max(200, this->config.stallGateMs / 3));
+        /*
+         * 兜底：最多冻这么久。
+         *
+         * <p>没有它的话，一个读不到数据的坏源、或一块没人看的屏会把位置永久冻住 ——
+         * 上层只会看到"一直缓冲中"，比卡顿更糟。到点强制恢复，让上层自己去处理。
+         *
+         * <p>为什么是 6 秒而不是更长：Java 侧 `MediaSession.checkHostHealth` 的判据是
+         * "8 秒没有新帧就重启子进程"（`STALL_TIMEOUT_MS`）。冻住期间发布帧数不涨，
+         * 一旦冻超过 8 秒就会被判成"卡死"并重建 —— 那比卡顿严重得多。留 2 秒余量。
+         */
+        const bool timeout = gatedMs > 6000;
+        if ((supplyOk && consumerOk) || timeout) {
+            if (timeout) {
+                std::printf("[host] ⚠ 等缓存超过 6 秒（水位 %dms）—— 强制恢复播放，不再等\n", level);
+            }
+            this->leaveGate();
+        } else {
+            this->buffering.store(true);
+            return true;
+        }
+    }
+
+    // 退防抖：刚退出闸门不久就别再进（否则声卡一秒停三次，听得见"咔咔"）
+    const bool canEnter = this->lastGateExitAt == clock::time_point{}
+            || now - this->lastGateExitAt > std::chrono::milliseconds(1200);
+
+    /*
+     * ---- ③ 供给见底 ----
+     *
+     * 队列里一帧都没有，而且网络侧存货低于低水位 → 冻住等数据。
+     * 这就是"不会因为服务端进度往前走就把客户端丢下"的那道闸。
+     */
+    if (canEnter && this->config.supplyGateMs > 0 && !this->demuxAtEof.load()
+        && this->frames.size() == 0 && level < supplyLow) {
+        this->enterGate("等数据");
+        return true;
+    }
+
+    /*
+     * ---- ④ 消费者卡住（客户端卡顿）----
+     *
+     * 游戏进程连续 stallGateMs 没来取帧 → 冻住。恢复后从同一位置接着放，
+     * 而不是让时钟继续走、把积压的帧全判成"迟到"丢掉。
+     */
+    if (canEnter && this->config.stallGateMs > 0 && this->consumerEverSeen
+        && !this->demuxAtEof.load()
+        && this->consumerStallMs.load() >= static_cast<uint32_t>(this->config.stallGateMs)) {
+        this->enterGate("客户端卡顿");
+        return true;
+    }
+
+    return false;
+}
+
+void VideoPipeline::enterGate(const char* reason) {
+    if (this->gateActive.load()) return;
+    this->gateActive.store(true);
+    this->gateSince = std::chrono::steady_clock::now();
+    this->gateCount.fetch_add(1);
+    /*
+     * 冻住时钟与声卡。
+     *
+     * <p>时钟在音频为主时会跟着 playedFrames 停（声卡停了计数就不动），
+     * 纯挂钟模式靠 clock.setPaused 冻住。两者都做才算"位置真的不再前进"。
+     */
+    this->clock.setPaused(true);
+    if (this->audioActive.load()) this->audioSink.setPaused(true);
+    /*
+     * 记一次"音频不连续"：闸门相当于一次暂停，退出后那几秒的偏移读数在收敛，
+     * 不该马上参与音画纠正判定（否则一次卡顿触发一次误纠正）。
+     */
+    this->lastAudioDiscontinuityAt = std::chrono::steady_clock::now();
+    this->buffering.store(true);
+    std::printf("[host] ⏸ 进入等缓存（%s）：水位 %dms，消费者停 %ums，位置 %.0fms\n",
+                reason, this->bufferLevelMs(), this->consumerStallMs.load(), this->clock.now());
+}
+
+void VideoPipeline::leaveGate(bool restorePlayback) {
+    if (!this->gateActive.load()) return;
+    this->gateActive.store(false);
+    const auto now = std::chrono::steady_clock::now();
+    const long long gatedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - this->gateSince).count();
+    if (gatedMs > 0) this->gateTotalMs.fetch_add(static_cast<uint64_t>(gatedMs));
+    this->lastGateExitAt = now;
+    if (restorePlayback) {
+        this->clock.setPaused(false);
+        if (this->audioActive.load()) this->audioSink.setPaused(false);
+        /*
+         * 与"暂停恢复"同样处理：把不连续点刷新到当下、丢掉旧的偏移样本，
+         * 让恢复后的头几秒只测量不动作（见 handleCommand 的 pause 分支）。
+         */
+        this->lastAudioDiscontinuityAt = now;
+        this->hasPrevAvOffset = false;
+        this->avOffsetStreak = 0;
+    }
+    this->buffering.store(false);
+    std::printf("[host] ▶ 退出等缓存（冻住 %lldms%s，累计 %llu ms / %u 次）：位置 %.0fms\n",
+                gatedMs, restorePlayback ? "" : "（交由暂停/定位处理）",
+                static_cast<unsigned long long>(this->gateTotalMs.load()),
+                this->gateCount.load(), this->clock.now());
+}
+
 void VideoPipeline::renderLoop() {
     AVFrame* frame = this->api.av_frame_alloc();
     auto lastStatusAt = std::chrono::steady_clock::now();
@@ -1854,6 +2156,27 @@ void VideoPipeline::renderLoop() {
         this->checkAudioVideoOffset();
         this->settleAudioSeek();
         this->injectDebugAudioLag();
+
+        // ---- 2.5) 缓冲闸门（起播预缓冲 / 等数据 / 等客户端取帧）----
+        /*
+         * 诊断：`--stall-inject N` 在最开始造一次 N 毫秒的"客户端卡死"，
+         * 用来验证闸门真的把位置冻住了（stall-test.ps1 用）。
+         */
+        if (this->config.stallInjectMs > 0 && !this->stallInjected) {
+            if (this->publishedCount.load() >= 5) {
+                this->stallInjected = true;
+                std::printf("[host] 诊断：注入 %dms 假卡顿（验证闸门）\n", this->config.stallInjectMs);
+                std::this_thread::sleep_for(std::chrono::milliseconds(this->config.stallInjectMs));
+            }
+        }
+        this->pollConsumerProgress();
+        if (this->evaluateBufferGate()) {
+            this->updateStatus();
+            this->updateThroughput();
+            std::unique_lock<std::mutex> lock(this->wakeMutex);
+            this->wakeSignal.wait_for(lock, std::chrono::milliseconds(10));
+            continue;
+        }
 
         // ---- 3) 时长/帧数上限 ----
         if (this->config.frames > 0 && this->publishedCount.load() >= this->config.frames) {

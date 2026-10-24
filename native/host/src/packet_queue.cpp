@@ -17,10 +17,12 @@ constexpr auto kWaitTick = std::chrono::milliseconds(20);
 
 } // namespace
 
-PacketQueue::PacketQueue(const FfmpegApi& ffmpeg, size_t maxPacketCount, size_t maxByteCount)
+PacketQueue::PacketQueue(const FfmpegApi& ffmpeg, size_t maxPacketCount, size_t maxByteCount,
+                         int maxSpan)
     : api(&ffmpeg),
       maxPackets(maxPacketCount == 0 ? 1 : maxPacketCount),
-      maxBytes(maxByteCount == 0 ? 1 : maxByteCount) {}
+      maxBytes(maxByteCount == 0 ? 1 : maxByteCount),
+      maxSpanMs(maxSpan) {}
 
 PacketQueue::~PacketQueue() {
     // 析构时把残留的包放掉：队列持有的是**所有权**，不是借用
@@ -46,7 +48,26 @@ bool PacketQueue::consumerShouldYield() const {
     return this->aborted || (this->consumerYield && this->consumerYield());
 }
 
-PacketQueue::PushResult PacketQueue::push(AVPacket* packet, uint64_t generation) {
+void PacketQueue::setSpanTargetMs(int ms) {
+    std::lock_guard<std::mutex> lock(this->mutex);
+    this->maxSpanMs = ms;
+    this->notFull.notify_all();
+}
+
+int PacketQueue::spanTargetMs() const {
+    std::lock_guard<std::mutex> lock(this->mutex);
+    return this->maxSpanMs;
+}
+
+int PacketQueue::spanMs() const {
+    std::lock_guard<std::mutex> lock(this->mutex);
+    if (this->entries.empty() || this->frontPtsMs < 0 || this->lastPushedPtsMs < 0) return 0;
+    const long long span = this->lastPushedPtsMs - this->frontPtsMs;
+    if (span <= 0) return 0;
+    return span > 600000 ? 600000 : static_cast<int>(span);
+}
+
+PacketQueue::PushResult PacketQueue::push(AVPacket* packet, uint64_t generation, long long ptsMs) {
     if (packet == nullptr || this->api == nullptr) return PushResult::Aborted;
     const size_t bytes = static_cast<size_t>(packet->size > 0 ? packet->size : 0);
 
@@ -55,8 +76,25 @@ PacketQueue::PushResult PacketQueue::push(AVPacket* packet, uint64_t generation)
         if (this->aborted) return PushResult::Aborted;
         // 让路优先于入队：seek 要执行时必须先让 demux 线程走开（它拿着 AVFormatContext）
         if (this->producerYield && this->producerYield()) return PushResult::Yielded;
-        const bool room = this->entries.size() < this->maxPackets
-                && (this->usedBytes + bytes <= this->maxBytes || this->entries.empty());
+        const bool byteRoom = this->usedBytes + bytes <= this->maxBytes || this->entries.empty();
+        bool spanRoom = true;
+        if (this->maxSpanMs > 0 && !this->entries.empty()
+            && this->frontPtsMs >= 0 && this->lastPushedPtsMs >= 0 && ptsMs >= 0) {
+            /*
+             * 跨度上限：**这才是"提前缓存 N 秒"的开关**。
+             *
+             * <p>以前只按"60 包 / 8MB"限深，于是网络侧最多领先播放位置 1 秒左右 ——
+             * 一次网络抖动或解码停顿就直接抽干，画面卡住等数据。
+             * 现在按**媒体时长**限深：队列里首尾 PTS 差到 maxSpanMs 才算满，
+             * demux 停下等消费，于是"已经下到本地、还没解码"的数据天然有这么长。
+             *
+             * <p>注意允许"新包让跨度略微超出"（用 max 推进的 lastPushedPtsMs 才是准的），
+             * 所以判定用 lastPushedPtsMs 与外层 ptsMs 的较大值，避免关键帧被卡在门外。
+             */
+            const long long newest = this->lastPushedPtsMs > ptsMs ? this->lastPushedPtsMs : ptsMs;
+            spanRoom = (newest - this->frontPtsMs) <= this->maxSpanMs;
+        }
+        const bool room = this->entries.size() < this->maxPackets && byteRoom && spanRoom;
         if (room) break;
         this->notFull.wait_for(lock, kWaitTick);
     }
@@ -68,7 +106,15 @@ PacketQueue::PushResult PacketQueue::push(AVPacket* packet, uint64_t generation)
         return PushResult::Aborted;
     }
     this->api->av_packet_move_ref(owned, packet);
-    this->entries.push_back(Entry{owned, generation});
+    /*
+     * 记录跨度端点（必须在 push_back 之前判断"队列原本是不是空"）。
+     *
+     * <p>队首 PTS 只在队列原本为空时取；否则保持不动（它就是队首那个包的时间）。
+     * lastPushed 单调取大：B 帧会让 PTS 轻微回退，用 max 才不会把跨度算短。
+     */
+    if (this->entries.empty()) this->frontPtsMs = ptsMs;
+    if (ptsMs >= 0 && ptsMs > this->lastPushedPtsMs) this->lastPushedPtsMs = ptsMs;
+    this->entries.push_back(Entry{owned, generation, ptsMs});
     this->usedBytes += bytes;
     lock.unlock();
     this->notEmpty.notify_one();
@@ -90,6 +136,27 @@ PacketQueue::PopResult PacketQueue::pop(AVPacket* out, uint64_t minGeneration,
         Entry entry = this->entries.front();
         this->entries.pop_front();
         this->usedBytes -= static_cast<size_t>(entry.packet->size > 0 ? entry.packet->size : 0);
+        /*
+         * 维护跨度端点：队首换人了，跨度就从新队首算起。
+         *
+         * <p>这一步是"水位读数准不准"的关键 —— 不更新的话 `spanMs()` 会一直报
+         * 最初那个包的 PTS，水位只涨不落，闸门就永远退不出去。
+         */
+        if (this->entries.empty()) {
+            this->frontPtsMs = -1;
+            this->lastPushedPtsMs = -1;
+        } else {
+            this->frontPtsMs = this->entries.front().ptsMs;
+            if (this->frontPtsMs < 0) {
+                // 队首没有 PTS（少见）：往后找一个有的，免得整个水位断掉
+                for (const Entry& e : this->entries) {
+                    if (e.ptsMs >= 0) {
+                        this->frontPtsMs = e.ptsMs;
+                        break;
+                    }
+                }
+            }
+        }
         /*
          * 陈旧的包（seek 之前读出来的）在这里丢掉。
          *
@@ -116,6 +183,8 @@ void PacketQueue::flush() {
         std::lock_guard<std::mutex> lock(this->mutex);
         dropped.swap(this->entries);
         this->usedBytes = 0;
+        this->frontPtsMs = -1;
+        this->lastPushedPtsMs = -1;
         this->eofFlag = false;
     }
     if (this->api != nullptr) {

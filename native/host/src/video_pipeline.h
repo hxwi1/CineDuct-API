@@ -125,6 +125,43 @@ struct PipelineConfig {
      */
     bool avDebug = false;
 
+    // ---- 缓冲与"等缓存"闸门（见 docs/PLAN-preload-buffer.md）----
+    /**
+     * **目标缓冲水位**（毫秒）：包队列里首尾 PTS 的跨度上限。
+     *
+     * <p>这就是"提前缓存几秒"的总开关。以前按条数（60 包）限深，网络侧最多领先 1 秒，
+     * 一次抖动就抽干；现在按媒体时长限深，下载线程会在播放位置**前面**停住。
+     * <= 0 表示退回旧的"只按条数/字节"行为。
+     */
+    int bufferTargetMs = 4000;
+    /**
+     * **起播预缓冲**（毫秒）：第一帧到达后先攒够这么多再开播（同时放声卡）。
+     *
+     * <p>为什么需要：以前第一帧一到就锚时钟开播，此时缓冲里几乎是空的 —— 网络稍抖，
+     * 起播那几秒就"卡一下、跳一段"，最坏直接黑屏等下一下。
+     * 攒一小段再开，代价是起播晚最多这么久。<= 0 关闭。
+     */
+    int prerollMs = 1500;
+    /**
+     * **卡顿闸门**（毫秒）：消费者（游戏进程）连续这么久没取帧，就把时钟+声卡冻住等它。
+     *
+     * <p>这是"客户端卡顿不要变成丢帧"的核心：卡顿期间位置不再前进，
+     * 恢复后接着从冻住的位置放，而不是把积压的帧全丢掉去追时钟。
+     * <= 0 关闭（只保留水位观测）。
+     */
+    int stallGateMs = 1500;
+    /**
+     * 供给闸门：水位低于低水位线且队列里没有帧可出时，冻住等数据（毫秒为单位的低水位按
+     * bufferTargetMs 推算，不单独配）。<= 0 关闭。
+     */
+    int supplyGateMs = 800;
+    /**
+     * **诊断专用**：每打一次卡顿就注入一次这么长的假停顿（模拟客户端卡死）。
+     *
+     * <p>`--stall-inject N` 用；生产不要开。
+     */
+    int stallInjectMs = 0;
+
     // ---- 播放控制 ----
     int avOffsetMs = 0;                     // > 0 = 画面提前
     int volume = 100;
@@ -222,8 +259,7 @@ private:
     /** 纪元开始（起播 / seek 之后的第一帧）：锚定时钟、必要时起播音频。 */
     void beginEpoch(long long mediaPtsMs);
     /** 片尾处理：循环 / 待命 / 收工。 */
-    void handleEndOfStream();
-    /** 待命：保持最后一帧，继续响应控制（片尾不退出进程，见 DEV-WORKFLOW §4.6）。 */
+    void handleEndOfStream();    /** 待命：保持最后一帧，继续响应控制（片尾不退出进程，见 DEV-WORKFLOW §4.6）。 */
     void idleAfterEnd();
     /** 把一个 seek 请求发布出去（三个线程各自看到新世代）。 */
     void requestSeek(long long targetMs);
@@ -260,6 +296,41 @@ private:
     void updateThroughput();
     /** 唤醒呈现线程（暂停/seek/停止/退出时调用）。 */
     void wakeRender();
+
+    // ---- 缓冲水位与"等缓存"闸门（docs/PLAN-preload-buffer.md 的 L0/L1/L3）----
+    /** 包队列里首尾 PTS 的跨度（毫秒）= 网络侧还有多少秒没解码。 */
+    int packetBufferMs() const;
+    /** 已解码未呈现的帧折算成的时长（毫秒）。 */
+    int frameBufferMs() const;
+    /** 总水位 = 包队列 + 帧队列。 */
+    int bufferLevelMs() const;
+    /**
+     * 采样消费者（游戏进程）的取帧进度，维护 "连续多久没取帧"。
+     *
+     * <p>判据是**共享状态块里的槽位状态**：消费者每拷完一帧会把该槽标成 SHOWN。
+     * 所有槽都停在 READY（没人来拷）就说明游戏侧停了 —— 这就是"客户端卡顿"的客观信号，
+     * 不需要跨进程 IPC。
+     */
+    void pollConsumerProgress();
+    /**
+     * 每轮呈现循环评估一次：这一轮要不要"等"（不取帧、不推进位置）。
+     *
+     * <p>三种"等"：① 起播预缓冲（还没有第一帧）；② 供给见底（水位低于低水位且没帧可出）；
+     * ③ 消费者卡住（游戏进程连续没取帧）。②③ 会进闸门（冻时钟 + 停声卡）。
+     *
+     * @return true = 本轮应当空转等待（调用方 continue）
+     */
+    bool evaluateBufferGate();
+    /** 进闸门：冻住时钟与声卡，位置就此停住（"等缓存"）。 */
+    void enterGate(const char* reason);
+    /**
+     * 退闸门：从冻住的那个位置接着放。
+     *
+     * @param restorePlayback true = 把时钟与声卡放回播放（正常退出闸门）；
+     *                        false = 只解除闸门状态，**不动**时钟/声卡（因为紧接着要暂停、
+     *                        定位或收工，这时去"恢复播放"会把用户刚按下的暂停又顶开）
+     */
+    void leaveGate(bool restorePlayback = true);
     bool stopNow() const { return this->stopRequested.load() || g_parentGone.load(); }
     /** av_read_frame 的中断回调（seek/停止时打断阻塞读）。 */
     static int interruptCallback(void* opaque);
@@ -327,6 +398,33 @@ private:
     std::atomic<bool> decoderIsHardware{false};
     /** 呈现线程是否没有帧可出（等数据/缓冲中）—— 进状态块。 */
     std::atomic<bool> buffering{false};
+
+    // ---- 缓冲闸门（v11；只由呈现线程改，控制通道只读）----
+    /** 闸门是否生效：时钟与声卡已冻住，位置不再前进（"等缓存"）。 */
+    std::atomic<bool> gateActive{false};
+    /** 累计进闸门次数 / 累计冻住时长（进状态块，上层据此判断"这次卡顿有没有被兜住"）。 */
+    std::atomic<uint32_t> gateCount{0};
+    std::atomic<uint64_t> gateTotalMs{0};
+    /** 本次进闸门的时刻（算 gateTotalMs 用）。 */
+    std::chrono::steady_clock::time_point gateSince{};
+    /** 上次退闸门的时刻（防抖：别一秒进三次闸门，声卡会"咔咔"响）。 */
+    std::chrono::steady_clock::time_point lastGateExitAt{};
+    /** 消费者（游戏进程）连续多久没取帧（毫秒，0 = 正常）。 */
+    std::atomic<uint32_t> consumerStallMs{0};
+    /** 上一次看到的"消费者已取走"的帧号（UINT32_MAX 的前缀 = 还没见过）。 */
+    uint32_t lastConsumedGeneration = 0xFFFFFFFFu;
+    /** 消费者最后一次取帧的时刻。 */
+    std::chrono::steady_clock::time_point lastConsumerProgressAt{};
+    /** 消费者是否至少取过一帧（没过就一直不判"卡顿"—— 没人看的屏幕本来就没人取帧）。 */
+    bool consumerEverSeen = false;
+    /** 起播预缓冲实际等了多久（进状态块，0 = 没等）。 */
+    std::atomic<uint32_t> prerollWaitedMs{0};
+    /** 起播预缓冲的起始时刻（0 = 还没开始等）。 */
+    std::chrono::steady_clock::time_point prerollSince{};
+    /** 起播预缓冲已经判定完成（只判一次，避免每轮重复打日志）。 */
+    bool prerollDone = false;
+    /** 诊断用的假卡顿是否已经注入过。 */
+    bool stallInjected = false;
     /** 最近一帧是不是"硬解帧回拷 CPU 再转"（设备没有可用 VideoProcessor 时的兜底）。 */
     bool lastFrameUsedCpuCopy = false;
     /**

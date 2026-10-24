@@ -19,7 +19,7 @@ namespace cineduct::spike {
 
 // "MFXP"
 inline constexpr uint32_t kMagic = 0x4D465850u;
-inline constexpr uint32_t kVersion = 10;
+inline constexpr uint32_t kVersion = 11;
 
 // 槽位状态机（计划文档 3.3 节）
 //   EMPTY   : 生产者可写
@@ -227,6 +227,36 @@ struct Status {
     uint32_t audioReconnects;   // 732：累计音频链重连次数（重开输入并回到原位置）
     uint32_t audioRepairs;      // 736：上层"音频僵死自动修复"次数
     uint32_t reserved4;         // 740：对齐占位（结构到 744）
+
+    /*
+     * v11 追加：**缓冲水位与"等缓存"状态**（只追加）。
+     *
+     * <p>为什么需要：以前状态环只能回答"此刻有没有帧可出"（buffering@376），
+     * 回答不了"还有多少秒的存货" —— 于是上层没法判断"这次卡顿是网络不够深还是客户端没在取帧"，
+     * 也无法显示"正在预缓冲 x/y 秒"。
+     *
+     * <ul>
+     *   <li>{@code packetBufferMs} —— 包队列里首尾 PTS 的跨度，就是"网络侧还有几秒没解码"；</li>
+     *   <li>{@code frameBufferMs} —— 已解码没呈现的帧折算成时长；</li>
+     *   <li>{@code bufferLevelMs} —— 上面两者之和，**唯一的缓冲水位**；</li>
+     *   <li>{@code bufferTargetMs} —— 当前生效的目标水位（自适应，见 L4）；</li>
+     *   <li>{@code gateActive} —— 1 = 正在"等缓存"（时钟与声卡已冻住，位置不再前进）；</li>
+     *   <li>{@code gateCount}/{@code gateTotalMs} —— 进入次数与累计冻住时长；</li>
+     *   <li>{@code consumerStallMs} —— 消费者（游戏进程）连续多久没取帧，0 = 正常；</li>
+     *   <li>{@code prerollMs} —— 本次起播实际用的预缓冲门限（0 = 没等直接起播）。</li>
+     * </ul>
+     */
+    uint32_t packetBufferMs;    // 744：包队列 PTS 跨度（毫秒，网络侧存货）
+    uint32_t frameBufferMs;     // 748：解码后未呈现帧的时长（毫秒）
+    uint32_t bufferLevelMs;     // 752：总水位 = 上两者之和
+    uint32_t bufferTargetMs;    // 756：当前目标水位（自适应）
+    uint32_t gateActive;        // 760：1 = 正在等缓存/等客户端取帧（时钟冻结）
+    uint32_t gateCount;         // 764：累计进入闸门次数
+    uint32_t consumerStallMs;   // 768：消费者连续未取帧时长（0 = 正常）
+    uint32_t prerollMs;         // 772：起播预缓冲实际用它等了多久（等待时长，0 = 没等）
+    uint64_t gateTotalMs;       // 776：累计被闸门冻住的时长
+    uint32_t reserved5;         // 784：对齐占位
+    uint32_t reserved6;         // 788：对齐占位（结构到 792）
 };
 #pragma pack(pop)
 
@@ -298,6 +328,16 @@ inline constexpr uint32_t kUuidBytes = 37;
 inline constexpr uint32_t kOffsetAudioReadErrors = 728;
 inline constexpr uint32_t kOffsetAudioReconnects = 732;
 inline constexpr uint32_t kOffsetAudioRepairs = 736;
+// v11 追加：缓冲水位与"等缓存"状态
+inline constexpr uint32_t kOffsetPacketBufferMs = 744;
+inline constexpr uint32_t kOffsetFrameBufferMs = 748;
+inline constexpr uint32_t kOffsetBufferLevelMs = 752;
+inline constexpr uint32_t kOffsetBufferTargetMs = 756;
+inline constexpr uint32_t kOffsetGateActive = 760;
+inline constexpr uint32_t kOffsetGateCount = 764;
+inline constexpr uint32_t kOffsetConsumerStallMs = 768;
+inline constexpr uint32_t kOffsetPrerollMs = 772;
+inline constexpr uint32_t kOffsetGateTotalMs = 776;
 
 /** audioMode 取值。 */
 inline constexpr uint32_t kAudioModeShared = 0;
@@ -365,5 +405,15 @@ static_assert(offsetof(Status, audioStalled) == kOffsetAudioStalled,
               "audioStalled 偏移与 Java 侧不一致");
 static_assert(offsetof(Status, audioFailed) == kOffsetAudioFailed,
               "audioFailed 偏移与 Java 侧不一致");
+static_assert(offsetof(Status, packetBufferMs) == kOffsetPacketBufferMs,
+              "packetBufferMs 偏移与 Java 侧不一致");
+static_assert(offsetof(Status, bufferLevelMs) == kOffsetBufferLevelMs,
+              "bufferLevelMs 偏移与 Java 侧不一致");
+static_assert(offsetof(Status, gateActive) == kOffsetGateActive,
+              "gateActive 偏移与 Java 侧不一致");
+static_assert(offsetof(Status, consumerStallMs) == kOffsetConsumerStallMs,
+              "consumerStallMs 偏移与 Java 侧不一致");
+static_assert(offsetof(Status, gateTotalMs) == kOffsetGateTotalMs,
+              "gateTotalMs 偏移与 Java 侧不一致");
 
 } // namespace cineduct::spike

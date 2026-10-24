@@ -172,6 +172,18 @@ struct Args {
     bool pace = true;
     double holdSeconds = 0;
 
+    // ---- 缓冲与"等缓存"闸门（docs/PLAN-preload-buffer.md）----
+    /** 目标缓冲水位（毫秒）：包队列按这个 PTS 跨度限深 = 提前缓存几秒。 */
+    int bufferTargetMs = 4000;
+    /** 起播预缓冲（毫秒）：攒够这么多再放第一帧。 */
+    int prerollMs = 1500;
+    /** 客户端卡顿多久后冻时钟（毫秒，0 = 关）。 */
+    int stallGateMs = 1500;
+    /** 供给见底多久后冻时钟（毫秒，0 = 关）。 */
+    int supplyGateMs = 800;
+    /** 诊断：注入一次假卡顿。 */
+    int stallInjectMs = 0;
+
     // ---- 音频 ----
     bool audio = true;
     bool audioOnly = false;
@@ -240,6 +252,11 @@ bool parseArgs(int argc, char** argv, Args& a) {
         else if (k == "--loop") { a.loop = true; }
         else if (k == "--no-pace") { a.pace = false; }
         else if (k == "--hold") { if (!next(v)) return false; a.holdSeconds = std::atof(v.c_str()); }
+        else if (k == "--buffer-target-ms") { if (!next(v)) return false; a.bufferTargetMs = std::atoi(v.c_str()); }
+        else if (k == "--preroll-ms") { if (!next(v)) return false; a.prerollMs = std::atoi(v.c_str()); }
+        else if (k == "--stall-gate-ms") { if (!next(v)) return false; a.stallGateMs = std::atoi(v.c_str()); }
+        else if (k == "--no-buffer-gate") { a.stallGateMs = 0; a.supplyGateMs = 0; }
+        else if (k == "--stall-inject") { if (!next(v)) return false; a.stallInjectMs = std::atoi(v.c_str()); }
         else if (k == "--no-audio") { a.audio = false; }
         else if (k == "--audio-only") { a.audioOnly = true; a.audio = true; }
         else if (k == "--audio-url") { if (!next(v)) return false; a.audioUrl = v; }
@@ -574,6 +591,7 @@ int runHost(int argc, char** argv) {
                      "用法: cineduct-host.exe --ffmpeg-dir <DLL目录> [--adapter-luid hi:lo] "
                      "--url <地址> [--headers \"Referer: x\\r\\nUser-Agent: y\\r\\n\"] [--user-agent <UA>] "
                      "[--frames N] [--fit-aspect A] [--av-offset-ms N]\n"
+                     "      [--buffer-target-ms N] [--preroll-ms N] [--stall-gate-ms N] [--no-buffer-gate]\n"
                      "      [--session-uuid <uuid>] [--instance-uuid <uuid>]\n"
                      "      cineduct-host.exe --list-adapters | --list-audio\n"
                      "调试日志: [--console] [--log-dir <目录>] [--log-file <文件>] [--log-keep N]\n"
@@ -679,6 +697,11 @@ int runHost(int argc, char** argv) {
     config.frames = args.frames;
     config.seconds = args.seconds;
     config.holdSeconds = args.holdSeconds;
+    config.bufferTargetMs = args.bufferTargetMs;
+    config.prerollMs = args.prerollMs;
+    config.stallGateMs = args.stallGateMs;
+    config.supplyGateMs = args.supplyGateMs;
+    config.stallInjectMs = args.stallInjectMs;
     config.audio = args.audio;
     config.audioUrl = args.audioUrl;
     config.audioMode = parseAudioMode(args.audioMode);
