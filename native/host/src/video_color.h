@@ -13,6 +13,7 @@
 // 这里只负责**从 AVFrame 读事实**（解码器已经把码流里的 color_trc/color_primaries/
 // color_space/color_range 与 HDR10 元数据挂在帧上），不认识 D3D。
 // ============================================================================
+// 目前还在调色中，近期不打算开放
 #pragma once
 
 #include <cstdint>
