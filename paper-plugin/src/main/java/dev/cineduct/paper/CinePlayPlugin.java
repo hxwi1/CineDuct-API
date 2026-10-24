@@ -63,8 +63,14 @@ public final class CinePlayPlugin extends JavaPlugin {
                 io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents.COMMANDS,
                 event -> this.commands.register(event.registrar()));
 
+        /*
+         * 进度持久化：客户端每 2 秒报一次位置，但**不能**每报一次就写盘。
+         * 这里每 20 秒把"有改动"的屏幕落一次盘；关服时 onDisable 还会强制存一次。
+         */
+        getServer().getScheduler().runTaskTimer(this, () -> this.screens.autosave(), 400L, 400L);
+
         getLogger().info("CinePlay 已启用：下行 " + CHANNEL_CONTROL + "，上行 " + CHANNEL_STATE
-                + "（客户端需要在 cineduct-packet.json 里打开闸门）");
+                + "（客户端需要在 cineduct-packet.json 里打开闸门；屏幕数据存 plugins/CinePlay/screens.yml）");
     }
 
     @Override
@@ -204,6 +210,8 @@ public final class CinePlayPlugin extends JavaPlugin {
         // 播放列表推进：客户端报 ENDED 就换下一项（Screens 内部有 3 秒去抖）
         for (StateSnapshot.Slot slot : snapshot.slots()) {
             if ("ENDED".equals(slot.state())) this.screens.noteEnded(slot.slot());
+            // 进度回写：服务端自己不知道"放到哪了"，只能听客户端报（每 20 秒才落一次盘）
+            else if (slot.positionMs() >= 0) this.screens.noteProgress(slot.slot(), slot.positionMs(), "PAUSED".equals(slot.state()));
         }
         if (logState()) {
             final StringBuilder sb = new StringBuilder("[state] ").append(player.getName());

@@ -62,6 +62,10 @@ final class Screens {
 
     private final CinePlayPlugin plugin;
     private final Map<String, Screen> screens = new LinkedHashMap<>();
+    /** 有未落盘的改动（进度每 tick 都在变，不能一变就写盘）。 */
+    private boolean dirty;
+    /** 上一次落盘的时刻（诊断用）。 */
+    private long lastSaveAt;
 
     Screens(CinePlayPlugin plugin) {
         this.plugin = plugin;
@@ -134,6 +138,8 @@ final class Screens {
     }
 
     synchronized void save() {
+        this.dirty = false;
+        this.lastSaveAt = System.currentTimeMillis();
         final YamlConfiguration yaml = new YamlConfiguration();
         for (Screen screen : this.screens.values()) {
             final String path = "screens." + screen.name;
@@ -156,8 +162,41 @@ final class Screens {
             }
             yaml.save(file());
         } catch (Exception e) {
+            this.dirty = true;      // 写失败就留着脏标记，下一轮 autosave 再试
             this.plugin.getLogger().warning("保存 screens.yml 失败: " + e.getMessage());
         }
+    }
+
+    // ---- 进度持久化 ----
+
+    /**
+     * 把客户端报上来的进度写进内存里的屏幕状态（**不立刻落盘**）。
+     *
+     * <p>为什么要这条：播放进度是服务端唯一"自己不会知道"的状态 —— 它只知道给了哪个 url、
+     * 从哪一刻起播。不回写的话，重启之后锚点永远是上一次手动设置的值（通常是 0），
+     * 表现为"重启后从头开始放"。
+     *
+     * <p>只在变化超过 1 秒或暂停状态翻了才记，避免每 2 秒的心跳都改状态。
+     */
+    synchronized void noteProgress(String slot, long positionMs, boolean paused) {
+        final Screen screen = get(slot);
+        if (screen == null || screen.playlist.isEmpty()) return;
+        final boolean pauseChanged = screen.paused != paused;
+        final boolean moved = Math.abs(positionMs - screen.positionMs) >= 1000L;
+        if (!pauseChanged && !moved) return;
+        screen.positionMs = Math.max(0L, positionMs);
+        screen.paused = paused;
+        this.dirty = true;
+    }
+
+    /** 定时任务调：有脏数据才写盘（默认每 20 秒一次，见插件 onEnable）。 */
+    synchronized void autosave() {
+        if (this.dirty) save();
+    }
+
+    /** 诊断：最近一次落盘多久之前。 */
+    synchronized long sinceLastSaveMs() {
+        return this.lastSaveAt <= 0 ? -1L : System.currentTimeMillis() - this.lastSaveAt;
     }
 
     // =====================================================================
