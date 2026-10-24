@@ -62,6 +62,11 @@ public final class SlotPlayback {
     private boolean allocated;
     /** 已经上报过时长的 url（同一视频只报一次）。 */
     private String reportedUrl;
+    /** 这块屏自己的可视范围（服务端每屏可配；0 = 用默认）。 */
+    private double enterRange = ENTER;
+    private double exitRange = EXIT;
+    /** 服务端指定的音量百分比（-1 = 不覆盖）。 */
+    private int volumePercent = -1;
 
     private SlotPlayback(String slot) {
         this.slot = slot;
@@ -72,9 +77,12 @@ public final class SlotPlayback {
     // =====================================================================
 
     /** 处理 {@code place}：下发/更新几何。 */
-    public static synchronized void applyPlace(SlotScreen screen) {
+    public static synchronized void applyPlace(SlotScreen screen, int enter, int exit) {
         final SlotPlayback playback = SLOTS.computeIfAbsent(screen.slot(), SlotPlayback::new);
         playback.screen = screen;
+        // 每屏可配：0 = 用客户端默认（48/64）
+        playback.enterRange = enter > 0 ? enter : ENTER;
+        playback.exitRange = exit > Math.max(4, enter) ? exit : Math.max(playback.enterRange + 4, EXIT);
         CineDuct.LOGGER.info("[CineDuct] 虚拟屏 slot={} 中心={} 半径≈{}格 alpha={}",
                 screen.slot(), fmt(screen.center()),
                 Math.round(screen.radius() * 100.0) / 100.0, screen.alpha());
@@ -82,8 +90,12 @@ public final class SlotPlayback {
 
     /** 处理 {@code anchor}：进度权威变化（换源 / seek / 暂停 / 播放列表推进都走这里）。 */
     public static synchronized void applyAnchor(String slot, String url, long positionMs, long serverTimeMs,
-                                                boolean paused, boolean live) {
+                                                boolean paused, boolean live, Integer volumePercent) {
         final SlotPlayback playback = SLOTS.computeIfAbsent(slot, SlotPlayback::new);
+        if (volumePercent != null) {
+            playback.volumePercent = volumePercent;
+            if (playback.player != null) playback.player.setVolumePercent(volumePercent);
+        }
         final boolean urlChanged = url != null && !url.equals(playback.anchorUrl);
         playback.anchorUrl = url;
         playback.anchorPositionMs = Math.max(0L, positionMs);
@@ -146,9 +158,9 @@ public final class SlotPlayback {
             playback.reportDurationOnce();
             final double dist = screen.center().distanceTo(eye);
             if (playback.player == null) {
-                if (dist <= ENTER && playback.hasAnchor) playback.openPlayer();
-            } else if (dist >= EXIT) {
-                playback.closePlayer("超出 " + (int) EXIT + " 格");
+                if (dist <= playback.enterRange && playback.hasAnchor) playback.openPlayer();
+            } else if (dist >= playback.exitRange) {
+                playback.closePlayer("超出 " + (int) playback.exitRange + " 格");
             }
         }
     }

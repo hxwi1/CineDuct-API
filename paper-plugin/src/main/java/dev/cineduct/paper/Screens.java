@@ -45,6 +45,25 @@ final class Screens {
          * 只存四角的话每次改规则都要求玩家把屏幕删了重建 —— 上一次调 SURFACE_GAP
          * 就是"改了没反应"，实际是旧坐标还躺在存档里。
          */
+        /* ---- 权限：谁能管理这块屏 ---- */
+
+        /** 创建者（唯一能授权给别人的人，OP 除外）。 */
+        java.util.UUID ownerId;
+        String ownerName;
+        /** 被逐项授权的人（可以管理这块屏，但不能再授权）。 */
+        final java.util.Set<java.util.UUID> access = new java.util.LinkedHashSet<>();
+        /** 是否对所有人开放管理。 */
+        boolean publicAccess;
+
+        /* ---- 每块屏自己的播放参数 ---- */
+
+        /** 音量百分比（0~100）。 */
+        int volumePercent = 100;
+        /** 起播距离（格）。 */
+        int enterRange = 48;
+        /** 停止距离（格）。 */
+        int exitRange = 64;
+
         Location origin1;
         Location origin2;
         String face1;
@@ -139,6 +158,22 @@ final class Screens {
         return new LinkedHashMap<>(this.screens);
     }
 
+    /** 能管理这块屏（改播放列表、删屏、调音量/范围、授权）：创建者本人 或 OP。 */
+    static boolean canManage(Screen screen, Player player) {
+        if (player == null) return true;                    // 控制台
+        if (player.isOp()) return true;
+        if (screen == null || screen.ownerId == null) return true;   // 没主人的老屏：不锁
+        return screen.ownerId.equals(player.getUniqueId());
+    }
+
+    /** 能用这块屏（管理权限 ∪ 被授权 ∪ 对所有人开放）。 */
+    static boolean canUse(Screen screen, Player player) {
+        if (canManage(screen, player)) return true;
+        if (screen == null) return false;
+        if (screen.publicAccess) return true;
+        return screen.access.contains(player.getUniqueId());
+    }
+
     private static Location vec(ConfigurationSection s, String key, World world) {
         final List<Double> list = new ArrayList<>(3);
         for (Object o : s.getList(key, List.of())) {
@@ -172,6 +207,20 @@ final class Screens {
             screen.paused = s.getBoolean("paused", false);
             screen.live = s.getBoolean("live", false);
             screen.finished = s.getBoolean("finished", false);
+            final String owner = s.getString("ownerId");
+            screen.ownerId = owner == null || owner.isBlank() ? null : java.util.UUID.fromString(owner);
+            screen.ownerName = s.getString("ownerName");
+            screen.publicAccess = s.getBoolean("publicAccess", false);
+            for (String id : s.getStringList("access")) {
+                try {
+                    screen.access.add(java.util.UUID.fromString(id));
+                } catch (IllegalArgumentException ignored) {
+                    // 存档里写坏了就跳过，不因为一条坏 UUID 丢掉整块屏
+                }
+            }
+            screen.volumePercent = Math.clamp(s.getInt("volumePercent", 100), 0, 100);
+            screen.enterRange = Math.max(4, s.getInt("enterRange", 48));
+            screen.exitRange = Math.max(screen.enterRange + 4, s.getInt("exitRange", 64));
             /*
              * 锚点时刻用"现在"：存档里存的是关服那一刻的位置，重启后应当从那里继续走，
              * 而不是把停机这段时间也算成"播过去了"。
@@ -225,6 +274,13 @@ final class Screens {
             yaml.set(path + ".paused", screen.paused);
             yaml.set(path + ".live", screen.live);
             yaml.set(path + ".finished", screen.finished);
+            yaml.set(path + ".ownerId", screen.ownerId == null ? null : screen.ownerId.toString());
+            yaml.set(path + ".ownerName", screen.ownerName);
+            yaml.set(path + ".publicAccess", screen.publicAccess);
+            yaml.set(path + ".access", screen.access.stream().map(java.util.UUID::toString).toList());
+            yaml.set(path + ".volumePercent", screen.volumePercent);
+            yaml.set(path + ".enterRange", screen.enterRange);
+            yaml.set(path + ".exitRange", screen.exitRange);
             if (screen.origin1 != null && screen.origin2 != null) {
                 yaml.set(path + ".origin1", List.of(screen.origin1.getX(), screen.origin1.getY(), screen.origin1.getZ()));
                 yaml.set(path + ".origin2", List.of(screen.origin2.getX(), screen.origin2.getY(), screen.origin2.getZ()));
@@ -353,7 +409,7 @@ final class Screens {
     /** 把几何下发给所有在线玩家（一次就够：客户端会记住）。 */
     void broadcastPlace(Screen screen) {
         if (screen.corners.size() != 4) return;
-        final String json = jsonPlace(screen.name, worldOf(screen), screen.corners);
+        final String json = jsonPlace(screen, worldOf(screen), screen.corners);
         int sent = 0;
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (this.plugin.sendControlJson(p, json)) sent++;
@@ -365,8 +421,7 @@ final class Screens {
     void broadcastAnchor(Screen screen) {
         final String url = screen.currentUrl();
         if (url.isEmpty() || screen.corners.isEmpty()) return;
-        final String json = jsonAnchor(screen.name, url, screen.currentPositionMs(),
-                screen.paused, screen.live);
+        final String json = jsonAnchor(screen, url, screen.currentPositionMs(), screen.paused, screen.live);
         int sent = 0;
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (this.plugin.sendControlJson(p, json)) sent++;
@@ -378,12 +433,12 @@ final class Screens {
     /** 只发给一个人（玩家进服时补投：他不在的时候建的屏，几何与锚点都要补）。 */
     void sendTo(Player player, Screen screen) {
         if (screen.corners.size() == 4) {
-            this.plugin.sendControlJson(player, jsonPlace(screen.name, worldOf(screen), screen.corners));
+            this.plugin.sendControlJson(player, jsonPlace(screen, worldOf(screen), screen.corners));
         }
         final String url = screen.currentUrl();
         if (!url.isEmpty()) {
             this.plugin.sendControlJson(player,
-                    jsonAnchor(screen.name, url, screen.currentPositionMs(), screen.paused, screen.live));
+                    jsonAnchor(screen, url, screen.currentPositionMs(), screen.paused, screen.live));
         }
     }
 
@@ -411,8 +466,10 @@ final class Screens {
     // JSON（自己拼，见 ControlMessage 的说明）
     // =====================================================================
 
-    private static String jsonPlace(String slot, String world, List<Location> corners) {
-        final ControlMessage m = ControlMessage.of("place", slot).world(world);
+    private static String jsonPlace(Screen screen, String world, List<Location> corners) {
+        final ControlMessage m = ControlMessage.of("place", screen.name).world(world)
+                .rawInt("enter", screen.enterRange)
+                .rawInt("exit", screen.exitRange);
         final StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < corners.size(); i++) {
             final Location c = corners.get(i);
@@ -425,12 +482,14 @@ final class Screens {
         return m.json();
     }
 
-    private static String jsonAnchor(String slot, String url, long positionMs, boolean paused, boolean live) {
+    private static String jsonAnchor(Screen screen, String url, long positionMs, boolean paused, boolean live) {
+        final String slot = screen.name;
         return ControlMessage.of("anchor", slot)
                 .url(url)
                 .positionMs(positionMs)
                 .paused(paused)
                 .live(live)
+                .rawInt("volume", screen.volumePercent)
                 .serverTimeMs(System.currentTimeMillis())
                 .json();
     }

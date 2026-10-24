@@ -16,6 +16,7 @@ import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
 import io.papermc.paper.command.brigadier.argument.resolvers.selector.PlayerSelectorArgumentResolver;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -157,6 +158,46 @@ final class CinePlayCommands {
                 .then(Commands.argument("screen", StringArgumentType.word())
                         .executes(ctx -> step(ctx, StringArgumentType.getString(ctx, "screen"), false))));
 
+        // ---- 权限与每屏参数 ----
+        root.then(Commands.literal("access")
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .suggests(this::suggestScreens)
+                        .then(Commands.literal("public")
+                                .then(Commands.argument("value", com.mojang.brigadier.arguments.BoolArgumentType.bool())
+                                        .executes(ctx -> accessPublic(ctx,
+                                                StringArgumentType.getString(ctx, "screen"),
+                                                com.mojang.brigadier.arguments.BoolArgumentType.getBool(ctx, "value")))))
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("player", StringArgumentType.word())
+                                        .executes(ctx -> accessChange(ctx,
+                                                StringArgumentType.getString(ctx, "screen"),
+                                                StringArgumentType.getString(ctx, "player"), true))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("player", StringArgumentType.word())
+                                        .executes(ctx -> accessChange(ctx,
+                                                StringArgumentType.getString(ctx, "screen"),
+                                                StringArgumentType.getString(ctx, "player"), false))))
+                        .then(Commands.literal("list").executes(ctx -> accessList(ctx,
+                                StringArgumentType.getString(ctx, "screen"))))));
+
+        root.then(Commands.literal("volume")
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .suggests(this::suggestScreens)
+                        .then(Commands.argument("percent", com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 100))
+                                .executes(ctx -> setVolume(ctx,
+                                        StringArgumentType.getString(ctx, "screen"),
+                                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "percent"))))));
+
+        root.then(Commands.literal("range")
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .suggests(this::suggestScreens)
+                        .then(Commands.argument("enter", com.mojang.brigadier.arguments.IntegerArgumentType.integer(4, 512))
+                                .executes(ctx -> setRange(ctx, StringArgumentType.getString(ctx, "screen"),
+                                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "enter"), -1))
+                                .then(Commands.argument("exit", com.mojang.brigadier.arguments.IntegerArgumentType.integer(8, 512))
+                                        .executes(ctx -> setRange(ctx, StringArgumentType.getString(ctx, "screen"),
+                                                com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "enter"),
+                                                com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "exit")))))));
         root.then(Commands.literal("screens").executes(ctx -> listScreens(ctx)));
 
         root.then(Commands.literal("remove")
@@ -326,6 +367,10 @@ final class CinePlayCommands {
         this.plugin.screens().put(screen);
         this.plugin.selector().finish(player);
 
+        if (screen.ownerId == null) {        // 第一任主人：谁先建归谁，之后只有本人/OP 能改
+            screen.ownerId = player.getUniqueId();
+            screen.ownerName = player.getName();
+        }
         this.plugin.setSlot(player, name);   // 之后不带屏幕名的子指令默认就作用在它上面
         Messages.ok(sender, "屏幕 " + name + " 已创建：" + describe(corners));
         Messages.note(sender, "接下来用 /cineplay add " + name + " <链接> 往播放列表里加片子");
@@ -342,6 +387,7 @@ final class CinePlayCommands {
             Messages.error(sender, "找不到屏幕 " + name + "（/cineplay screens 看现有屏幕）");
             return 0;
         }
+        if (!ensureManage(sender, screen)) return 0;
         final boolean wasEmpty = screen.playlist.isEmpty();
         screen.playlist.add(url);
         screen.durations.add(Math.max(0, durationSec));
@@ -415,6 +461,96 @@ final class CinePlayCommands {
         this.plugin.screens().put(screen);
         this.plugin.screens().broadcastAnchor(screen);
         Messages.ok(sender, "切到第 " + (screen.index + 1) + " 项：" + shorten(url));
+        return 1;
+    }
+
+    /** 管理权限校验：不是主人也不是 OP 就拒绝。 */
+    private boolean ensureManage(CommandSender sender, Screens.Screen screen) {
+        final Player player = sender instanceof Player p ? p : null;
+        if (Screens.canManage(screen, player)) return true;
+        Messages.error(sender, "这块屏归 " + (screen.ownerName == null ? "别人" : screen.ownerName)
+                + " 管，只有本人或 OP 能改");
+        return false;
+    }
+
+    private int accessPublic(CommandContext<CommandSourceStack> ctx, String name, boolean value)
+            throws CommandSyntaxException {
+        final CommandSender sender = ctx.getSource().getSender();
+        final Screens.Screen screen = this.plugin.screens().get(name);
+        if (screen == null) { Messages.error(sender, "找不到屏幕 " + name); return 0; }
+        if (!ensureManage(sender, screen)) return 0;
+        screen.publicAccess = value;
+        this.plugin.screens().put(screen);
+        Messages.ok(sender, value ? "屏幕 " + name + " 已对所有人开放管理" : "屏幕 " + name + " 只允许主人与授权者管理");
+        return 1;
+    }
+
+    /** {@code /cineplay access <屏幕> add|remove <玩家>}。 */
+    private int accessChange(CommandContext<CommandSourceStack> ctx, String name, String targetName, boolean add)
+            throws CommandSyntaxException {
+        final CommandSender sender = ctx.getSource().getSender();
+        final Screens.Screen screen = this.plugin.screens().get(name);
+        if (screen == null) { Messages.error(sender, "找不到屏幕 " + name); return 0; }
+        if (!ensureManage(sender, screen)) return 0;
+        final Player target = Bukkit.getPlayerExact(targetName);
+        if (target == null) {
+            Messages.error(sender, "找不到在线玩家 " + targetName + "（授权对象需要在线一次）");
+            return 0;
+        }
+        if (add) {
+            screen.access.add(target.getUniqueId());
+            Messages.ok(sender, "已允许 " + target.getName() + " 管理屏幕 " + name);
+        } else {
+            screen.access.remove(target.getUniqueId());
+            Messages.ok(sender, "已收回 " + target.getName() + " 对屏幕 " + name + " 的管理权");
+        }
+        this.plugin.screens().put(screen);
+        return 1;
+    }
+
+    private int accessList(CommandContext<CommandSourceStack> ctx, String name) {
+        final CommandSender sender = ctx.getSource().getSender();
+        final Screens.Screen screen = this.plugin.screens().get(name);
+        if (screen == null) { Messages.error(sender, "找不到屏幕 " + name); return 0; }
+        Messages.ok(sender, "屏幕 " + name + " 的主人：" + (screen.ownerName == null ? "（无）" : screen.ownerName)
+                + (screen.publicAccess ? "，已对所有人开放" : ""));
+        if (screen.access.isEmpty()) {
+            Messages.note(sender, "被授权的人：无（/cineplay access " + name + " add <玩家> 添加）");
+        } else {
+            Messages.note(sender, "被授权的人：" + screen.access.size() + " 个");
+            for (java.util.UUID id : screen.access) {
+                final String n = Bukkit.getOfflinePlayer(id).getName();
+                Messages.note(sender, "  - " + (n == null ? id.toString() : n));
+            }
+        }
+        return 1;
+    }
+
+    private int setVolume(CommandContext<CommandSourceStack> ctx, String name, int percent)
+            throws CommandSyntaxException {
+        final CommandSender sender = ctx.getSource().getSender();
+        final Screens.Screen screen = this.plugin.screens().get(name);
+        if (screen == null) { Messages.error(sender, "找不到屏幕 " + name); return 0; }
+        if (!ensureManage(sender, screen)) return 0;
+        screen.volumePercent = Math.clamp(percent, 0, 100);
+        this.plugin.screens().put(screen);
+        this.plugin.screens().broadcastAnchor(screen);        // 立刻生效（锚点里带 volume）
+        Messages.ok(sender, "屏幕 " + name + " 音量 → " + screen.volumePercent + "%");
+        return 1;
+    }
+
+    private int setRange(CommandContext<CommandSourceStack> ctx, String name, int enter, int exit)
+            throws CommandSyntaxException {
+        final CommandSender sender = ctx.getSource().getSender();
+        final Screens.Screen screen = this.plugin.screens().get(name);
+        if (screen == null) { Messages.error(sender, "找不到屏幕 " + name); return 0; }
+        if (!ensureManage(sender, screen)) return 0;
+        screen.enterRange = enter;
+        screen.exitRange = exit > 0 ? Math.max(enter + 2, exit) : Math.max(enter + 16, (int) Math.round(enter * 1.33));
+        this.plugin.screens().put(screen);
+        this.plugin.screens().broadcastPlace(screen);         // 范围在 place 里，重发几何
+        Messages.ok(sender, "屏幕 " + name + " 可视范围：" + screen.enterRange + " 格内起播 / "
+                + screen.exitRange + " 格外停止");
         return 1;
     }
 

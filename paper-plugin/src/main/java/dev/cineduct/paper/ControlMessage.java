@@ -99,6 +99,12 @@ public final class ControlMessage {
      * <p>只给 {@code corners} 这种结构用：把它拆成 4 个字符串字段会让协议更难看。
      * 调用方负责保证 {@code rawJson} 是合法 JSON —— 这里不校验（内部只有一处调用）。
      */
+    /** 写一个数字字段（值原样拼进 JSON，不经过字符串转义）。 */
+    public ControlMessage rawInt(String key, int value) {
+        put(key, value);
+        return this;
+    }
+
     public ControlMessage raw(String key, String rawJson) {
         if (this.body.length() > 0) this.body.append(',');
         this.body.append('"').append(key).append("\":").append(rawJson);

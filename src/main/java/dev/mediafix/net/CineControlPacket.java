@@ -42,6 +42,11 @@ public final class CineControlPacket {
     public final Boolean paused;
     public final Boolean muted;
     public final Boolean repeat;
+    /** 起播距离（格）；没带就是 0（用客户端默认）。 */
+    public final int enter;
+    /** 停止距离（格）；没带就是 0（用客户端默认）。 */
+    public final int exit;
+
     public final Integer volume;
     public final Long positionMs;
     public final Float aspect;
@@ -77,6 +82,8 @@ public final class CineControlPacket {
         this.muted = boolOr(o, "muted");
         this.repeat = boolOr(o, "repeat");
         this.positionMs = longOrNull(o, "positionMs");
+        this.enter = intOrZero(o, "enter");
+        this.exit = intOrZero(o, "exit");
         this.volume = intOrNull(o, "volume") != null ? intOrNull(o, "volume")
                 : intOrNull(o, "percent");
         this.aspect = floatOrNull(o, "aspect");
@@ -180,6 +187,10 @@ public final class CineControlPacket {
         } catch (Exception ex) {
             return null;
         }
+    }
+
+    private static int intOrZero(JsonObject o, String key) {
+        return intOr(o, key, 0);
     }
 
     private static Boolean boolOr(JsonObject o, String key) {

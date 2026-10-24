@@ -167,11 +167,11 @@ public final class CineControlHandler {
              * 两个都不直接开播放器 —— 开播由距离门控决定（SlotPlayback.tick）。
              */
             case "place" -> dev.mediafix.client.SlotPlayback.applyPlace(
-                    dev.mediafix.client.SlotScreen.parse(p.slot, p.raw));
+                    dev.mediafix.client.SlotScreen.parse(p.slot, p.raw), p.enter, p.exit);
             case "anchor" -> dev.mediafix.client.SlotPlayback.applyAnchor(
                     p.slot, p.url, p.positionMs == null ? 0L : p.positionMs,
                     p.serverTimeMs == null ? 0L : p.serverTimeMs,
-                    p.paused != null && p.paused, p.live != null && p.live);
+                    p.paused != null && p.paused, p.live != null && p.live, p.volume);
             default -> throw new IllegalStateException("未实现的 op: " + p.op);
         }
     }
