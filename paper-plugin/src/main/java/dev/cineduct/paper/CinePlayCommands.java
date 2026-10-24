@@ -122,16 +122,38 @@ final class CinePlayCommands {
                 .then(Commands.argument("name", StringArgumentType.word())
                         .executes(ctx -> confirm(ctx, StringArgumentType.getString(ctx, "name")))));
 
-        // ---- 播放列表 ----
+        // ---- 播放列表（每条都能显式指定屏幕；不指定就用"当前屏幕"）----
         root.then(Commands.literal("add")
                 .requires(src -> src.getSender().hasPermission("cineplay.admin"))
+                /*
+                 * 顺序要紧：先 word 再 greedy。
+                 *
+                 * 屏幕名是 word（Brigadier 的 word 不含 `:` `/`），而 URL 一定含 `://`，
+                 * 所以 `add https://…` 只可能命中 greedy 那个；`add main https://…` 命中 word。
+                 * 反过来注册就会把 `main https://…` 整串当 URL 吃掉。
+                 */
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .then(Commands.argument("url", StringArgumentType.greedyString())
+                                .executes(ctx -> add(ctx, StringArgumentType.getString(ctx, "screen"),
+                                        StringArgumentType.getString(ctx, "url")))))
                 .then(Commands.argument("url", StringArgumentType.greedyString())
-                        .executes(ctx -> add(ctx, StringArgumentType.getString(ctx, "url")))));
+                        .executes(ctx -> add(ctx, targetScreenName(ctx.getSource()),
+                                StringArgumentType.getString(ctx, "url")))));
 
-        root.then(Commands.literal("playlist").executes(ctx -> playlist(ctx)));
+        root.then(Commands.literal("playlist")
+                .executes(ctx -> playlist(ctx, targetScreenName(ctx.getSource())))
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .executes(ctx -> playlist(ctx, StringArgumentType.getString(ctx, "screen")))));
 
-        root.then(Commands.literal("next").executes(ctx -> step(ctx, true)));
-        root.then(Commands.literal("prev").executes(ctx -> step(ctx, false)));
+        root.then(Commands.literal("next")
+                .executes(ctx -> step(ctx, targetScreenName(ctx.getSource()), true))
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .executes(ctx -> step(ctx, StringArgumentType.getString(ctx, "screen"), true))));
+
+        root.then(Commands.literal("prev")
+                .executes(ctx -> step(ctx, targetScreenName(ctx.getSource()), false))
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .executes(ctx -> step(ctx, StringArgumentType.getString(ctx, "screen"), false))));
 
         root.then(Commands.literal("screens").executes(ctx -> listScreens(ctx)));
 
@@ -292,16 +314,16 @@ final class CinePlayCommands {
         this.plugin.screens().put(screen);
         this.plugin.selector().finish(player);
 
+        this.plugin.setSlot(player, name);   // 之后不带屏幕名的子指令默认就作用在它上面
         Messages.ok(sender, "屏幕 " + name + " 已创建：" + describe(corners));
-        Messages.note(sender, "接下来用 /cineplay add <链接> 往播放列表里加片子");
+        Messages.note(sender, "接下来用 /cineplay add " + name + " <链接> 往播放列表里加片子");
         this.plugin.screens().broadcastPlace(screen);
         return 1;
     }
 
-    /** {@code /cineplay add <url>}：追加到当前屏幕的播放列表（空列表则立刻开始播）。 */
-    private int add(CommandContext<CommandSourceStack> ctx, String url) throws CommandSyntaxException {
+    /** {@code /cineplay add [屏幕名] <url>}：追加到某块屏幕的播放列表（空列表则立刻开始播）。 */
+    private int add(CommandContext<CommandSourceStack> ctx, String name, String url) throws CommandSyntaxException {
         final CommandSender sender = ctx.getSource().getSender();
-        final String name = targetScreenName(ctx.getSource());
         final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null) {
             Messages.error(sender, "找不到屏幕 " + name + "（/cineplay screens 看现有屏幕）");
@@ -314,7 +336,7 @@ final class CinePlayCommands {
             screen.positionMs = 0L;
         }
         this.plugin.screens().put(screen);
-        Messages.ok(sender, "已加入播放列表（第 " + screen.playlist.size() + " 项）");
+        Messages.ok(sender, "已加入屏幕 " + screen.name + " 的播放列表（第 " + screen.playlist.size() + " 项）：" + shorten(url));
         if (wasEmpty) {
             this.plugin.screens().broadcastAnchor(screen);
             Messages.note(sender, "开始播放第 1 项");
@@ -322,9 +344,9 @@ final class CinePlayCommands {
         return 1;
     }
 
-    private int playlist(CommandContext<CommandSourceStack> ctx) {
+    private int playlist(CommandContext<CommandSourceStack> ctx, String name) {
         final CommandSender sender = ctx.getSource().getSender();
-        final Screens.Screen screen = this.plugin.screens().get(targetScreenName(ctx.getSource()));
+        final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null) {
             Messages.error(sender, "还没有这块屏幕");
             return 0;
@@ -339,9 +361,9 @@ final class CinePlayCommands {
     }
 
     /** {@code /cineplay next} / {@code prev}：手动切一条并重新下发锚点。 */
-    private int step(CommandContext<CommandSourceStack> ctx, boolean forward) throws CommandSyntaxException {
+    private int step(CommandContext<CommandSourceStack> ctx, String name, boolean forward) throws CommandSyntaxException {
         final CommandSender sender = ctx.getSource().getSender();
-        final Screens.Screen screen = this.plugin.screens().get(targetScreenName(ctx.getSource()));
+        final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null || screen.playlist.isEmpty()) {
             Messages.error(sender, "这块屏幕还没有播放列表");
             return 0;

@@ -122,6 +122,14 @@ public final class CineControlHandler {
 
     /** 真正执行。**幂等**：重复下发同一 op 结果一致（§3 的通用规则）。 */
     private static void apply(CineControlPacket p) throws Exception {
+        /*
+         * 先问虚拟屏：它的播放器是"距离门控"建的，不在这张 slot 表里。
+         * 不先问的话，pause/seek/volume/close 对虚拟屏就是空操作（指令回"已发送"，画面不动）。
+         */
+        if (dev.mediafix.client.SlotPlayback.handleControl(p.op, p.slot, p.paused, p.positionMs,
+                p.volume, p.muted)) {
+            return;
+        }
         switch (p.op) {
             case "open" -> open(p);
             case "close" -> close(p.slot, "服务端关闭");

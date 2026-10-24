@@ -188,6 +188,48 @@ public final class SlotPlayback {
     }
 
     // =====================================================================
+    // 控制（pause / seek / volume / mute / close）
+    // =====================================================================
+
+    /**
+     * 把一条控制报文落到虚拟屏的播放器上。
+     *
+     * <p>为什么需要它：虚拟屏的播放器是**距离门控**建的，不在 {@code CineControlHandler} 的 slot 表里，
+     * 所以 `pause main` 这类指令如果只查那张表就是空操作 —— 表现为"指令回了已发送，画面没停"。
+     *
+     * @return true = 这条 op 已经由虚拟屏处理（调用方不要再走普通 slot 那条路）
+     */
+    public static synchronized boolean handleControl(String op, String slot, Boolean paused,
+                                                     Long positionMs, Integer volume, Boolean muted) {
+        final SlotPlayback playback = SLOTS.get(slot);
+        if (playback == null) return false;          // 不是虚拟屏，交给普通 slot
+        final CinePlayer player = playback.player;
+        switch (op) {
+            case "pause" -> {
+                playback.anchorPaused = paused != null && paused;
+                if (player != null && paused != null) player.pause(paused);
+            }
+            case "seek" -> {
+                if (positionMs == null) return true;
+                playback.anchorPositionMs = Math.max(0L, positionMs);
+                playback.anchorWallMs = System.currentTimeMillis();
+                if (player != null && !player.isLive()) player.seek(positionMs);
+            }
+            case "volume" -> {
+                if (player != null && volume != null) player.setVolumePercent(volume);
+            }
+            case "mute" -> {
+                if (player != null && muted != null) player.setMuted(muted);
+            }
+            case "close" -> playback.closePlayer("服务端关闭");
+            default -> {
+                return false;                        // open/rebuild/... 不归这里管
+            }
+        }
+        return true;
+    }
+
+    // =====================================================================
     // 渲染侧
     // =====================================================================
 
