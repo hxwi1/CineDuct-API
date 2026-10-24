@@ -7,7 +7,8 @@
 服务端 /cineplay play <链接>
      └─ 插件消息 cineduct:control（JSON）
           └─ 客户端模组：闸门 → 分派 → CinePlayer 播放
-               └─ 插件消息 cineduct:state（JSON 回执，可选）
+               └─ 插件消息 cineduct:state（JSON 回执）
+                    └─ /cineplay status 显示成一行行状态
 ```
 
 协议与所有字段定义在仓库根目录 [`docs/paper-control-payload.md`](../docs/paper-control-payload.md)。
@@ -18,12 +19,12 @@
 .\gradlew.bat -p paper-plugin build      # 产物 paper-plugin/build/libs/cineplay-<版本>.jar
 ```
 
-需要 JDK 21（编译期只依赖 `io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT`）。
+需要 JDK 21。编译期只依赖 `io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT`。
 
 ## 安装
 
-1. 把 jar 放进服务器的 `plugins/`。
-2. **客户端**（装了 CineDuct 模组的玩家）要在 `<游戏目录>/cineduct-packet.json` 里打开闸门：
+1. jar 放进服务器的 `plugins/`，重启。
+2. **客户端**（装了 CineDuct 的玩家）要在 `<游戏目录>/cineduct-packet.json` 里打开闸门：
 
 ```json
 {
@@ -36,33 +37,39 @@
 }
 ```
 
-- `servers` 是**包含匹配**，所以写 `mc.example.com` 能匹配 `mc.example.com:25565`；局域网测试就写你
-  多人游戏列表里填的那个地址（`localhost:25565` 之类）。**留空 = 全拒**。
-- `token` 与插件 `config.yml` 里的 `token` 要么都空、要么一致。
-- 默认是**关**的：这条通道等于把播放控制权交给服务器，默认不接任何包。
+- `servers` 是**包含匹配**：写 `mc.example.com` 能匹配 `mc.example.com:25565`；局域网测试写你在
+  多人游戏列表里填的那个地址（`localhost:25565` 之类）。**留空 = 全拒**（默认就是空）。
+- `token` 与插件 `config.yml` 的 `token` 要么都空、要么一致。
+- 默认是**关**的：这条通道等于把播放控制权交给服务器。
 
-3. 游戏里确认通道状态：`/cineduct packet status`。
+3. 游戏里核对通道：`/cineduct packet status`。
 
 ## 指令
 
+两套形状：**不带 `to` 作用于自己**，**带 `to <目标>` 作用于别人**（目标用原版选择器）。
+
 | 指令 | 作用 |
 | --- | --- |
-| `/cineplay play <链接> [slot]` | 在自己的客户端开播 |
-| `/cineplay broadcast <链接> [slot]` | 给所有在线玩家开播 |
+| `/cineplay play <链接>` | 在自己客户端开播 |
+| `/cineplay to @a play <链接>` | 给所有在线玩家开播（`@a[distance=..32]`、玩家名都行） |
 | `/cineplay pause` / `resume` / `stop` | 暂停 / 继续 / 关闭 |
 | `/cineplay seek <秒>` | 跳转（直播无效） |
 | `/cineplay volume <0-100>` | 音量 |
 | `/cineplay aspect <比例>` | 显示面比例（16:9 = 1.7778；0 = 关闭信箱化） |
-| `/cineplay rebuild` / `list` | 重建播放 / 请求回执 |
-| `/cineplay status [玩家]` | 通道状态与最近一条回执 |
+| `/cineplay rebuild` / `list` / `sync` | 重建播放 / 请求回执 / 对齐 |
+| `/cineplay slot [名字]` | 查看 / 切换当前操作的槽位（客户端按名字区分多条播放） |
+| `/cineplay status [玩家]` | 通道状态 + 客户端回执（状态/进度/音量/错误） |
+| `/cineplay reload` | 重载 `config.yml` |
 
-不带 `[slot]` 时用 `config.yml` 的 `defaultSlot`（默认 `main`）。权限 `cineplay.admin`（默认 OP）。
+`URL` 用 `greedyString`（B 站直链带 `?a=1&b=2`，普通 string 参数吃不下），所以它**必须在最后** ——
+槽位因此不做成参数，而是用 `/cineplay slot <名字>` 记住。
+
+权限：`cineplay.use`（自己）、`cineplay.others`（`to` 与 `status <玩家>`）、`cineplay.admin`（`reload`），默认都是 OP。
 
 ## 注意
 
-- **P2 还没做**：客户端能收指令、能出声、能报位置，但这个插件本身**不提供画面** ——
-  画面得等模组内置显示目标（`docs/paper-control-payload.md` §8 的 B 方案）。现在验收看
-  `/cineduct packet status` 与 `/cineplay status`。
-- `requireChannel` 默认 `false`：NeoForge 客户端是否通过 Bukkit 的 register 机制通告通道，
-  各版本行为不一致，拿它当硬门禁会出现"客户端装了也发不出去"。发给没人监听的通道对原版客户端无副作用。
-- 插件侧不做限流（客户端有 20 条/秒的闸门），但**不要在循环里调指令**。
+- **P2 还没做**：客户端能收指令、能出声、能报位置，但这个插件**不提供画面** ——
+  画面要等模组内置显示目标（`docs/paper-control-payload.md` §8 的 B 方案）。
+  现在验收看 `/cineplay status`（应有 slot 在 `PLAYING`、位置在走）与听声音。
+- `requireChannel` 默认 `false`：见 `config.yml` 里的说明。
+- 插件侧不做限流（客户端有 20 条/秒的闸门），但别在循环里调指令；`play` 自带 1.5 秒冷却。

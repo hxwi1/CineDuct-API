@@ -1,0 +1,21 @@
+name: CinePlay
+version: ${version}
+main: dev.cineduct.paper.CinePlayPlugin
+api-version: '1.21'
+description: 用服务端指令控制装了 CineDuct 模组的客户端播放（cineduct:control 插件通道）。
+authors: [hxwi1]
+website: https://github.com/hxwi1/CineDuct-API
+
+# 指令不在这里声明：Paper 插件用 LifecycleEvents.COMMANDS 注册 Brigadier 指令
+# （见 https://docs.papermc.io/paper/dev/command-api/basics/registration）
+
+permissions:
+  cineplay.use:
+    description: 控制自己的客户端播放（/cineplay play、pause 等）
+    default: op
+  cineplay.others:
+    description: 控制其他玩家的客户端播放（/cineplay to <目标> ...、/cineplay status <玩家>）
+    default: op
+  cineplay.admin:
+    description: 重载配置（/cineplay reload）
+    default: op

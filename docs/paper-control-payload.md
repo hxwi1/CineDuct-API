@@ -184,14 +184,19 @@
 ### P1 Paper 参考插件（新目录 `paper-plugin/`）—— ✅ 已实现
 
 Java 21 + `paper-api:1.21.1-R0.1-SNAPSHOT`，独立 gradle 项目（`.\gradlew.bat -p paper-plugin build`），
-产物 `cineplay-<版本>.jar`，**不进本模组产物**。用法与客户端闸门配置见 `paper-plugin/README.md`。
+产物 `cineplay-<版本>.jar`，**不进本模组产物**。用法见 `paper-plugin/README.md`。
+
+按 [Paper 官方文档](https://docs.papermc.io/paper/dev/getting-started/paper-plugins) 的现代写法：
 
 | 内容 | 说明 |
 | --- | --- |
-| 指令 | `/cineplay play <url> [slot]`、`broadcast`、`pause`、`resume`、`stop`、`seek <秒>`、`volume <0-100>`、`aspect <比例>`、`rebuild`、`list`、`status [玩家]`；权限 `cineplay.admin`（默认 OP） |
-| 发送 | `player.sendPluginMessage(this, "cineduct:control", bytes)`；JSON 自己拼（无 Gson 依赖），转义按 RFC 8259 |
-| 配置 | `config.yml`：`token`、`defaultSlot`、`logState`、`requireChannel`（默认 false） |
-| 上行 | `Messenger` 注册 `cineduct:state` 入站 → 每个玩家存最近一条，`/cineplay status` 显示 |
+| 插件描述 | `paper-plugin.yml`（不是 `plugin.yml`）；指令**不**在里面声明 |
+| 指令注册 | `getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS, …)` + Brigadier 指令树，`/reload` 后自动重注册 |
+| 指令形状 | `/cineplay <op> …` 作用于自己；`/cineplay to <目标> <op> …` 作用于原版选择器选中的一批人（`@a`、玩家名、`@a[distance=..32]`） |
+| 参数类型 | 用 Brigadier 强类型（`DoubleArgumentType` / `IntegerArgumentType` / `FloatArgumentType`）；`url` 用 `greedyString`（B 站直链带 `?&=`），因此它在最后、槽位改用 `/cineplay slot <名字>` 记住 |
+| 回执展示 | 插件侧解析 `cineduct:state`（Gson，由 Paper 提供），`/cineplay status` 显示"slot 状态 进度/时长 传输 音量 错误" |
+| 配置 | `config.yml`：`token`、`defaultSlot`、`logState`、`playCooldownMs`、`requireChannel`；`/cineplay reload` 热重载 |
+| 权限 | `cineplay.use` / `cineplay.others` / `cineplay.admin`（默认 OP） |
 
 `requireChannel` 默认 **false** 是刻意留的：NeoForge 客户端是否通过 Bukkit 的 register 机制通告通道，
 各版本行为不一致，拿它当硬门禁会出现"客户端明明装了却发不出去"；发给没人监听的通道对原版客户端无副作用。
