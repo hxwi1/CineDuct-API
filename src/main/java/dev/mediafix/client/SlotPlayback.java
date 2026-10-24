@@ -240,7 +240,10 @@ public final class SlotPlayback {
             case "mute" -> {
                 if (player != null && muted != null) player.setMuted(muted);
             }
-            case "close" -> playback.closePlayer("服务端关闭");
+            case "close" -> {
+                playback.closePlayer("服务端关闭");
+                playback.screen = null;      // 几何也清掉：删屏立刻生效，不用重进服
+            }
             default -> {
                 return false;                        // open/rebuild/... 不归这里管
             }
@@ -343,10 +346,10 @@ public final class SlotPlayback {
                 final float brightness = playback.brightness();
                 final float alpha = playback.alpha();
                 // 环序：左上 → 右上 → 右下 → 左下
-                ScreenQuad.emit3(consumer, last, quad[0], 0.0f, 0.0f, brightness, alpha);
-                ScreenQuad.emit3(consumer, last, quad[1], 1.0f, 0.0f, brightness, alpha);
-                ScreenQuad.emit3(consumer, last, quad[2], 1.0f, 1.0f, brightness, alpha);
-                ScreenQuad.emit3(consumer, last, quad[3], 0.0f, 1.0f, brightness, alpha);
+                ScreenQuad.emit3(consumer, last, quad[0], 0.0f, 1.0f, brightness, alpha);
+                ScreenQuad.emit3(consumer, last, quad[1], 1.0f, 1.0f, brightness, alpha);
+                ScreenQuad.emit3(consumer, last, quad[2], 1.0f, 0.0f, brightness, alpha);
+                ScreenQuad.emit3(consumer, last, quad[3], 0.0f, 0.0f, brightness, alpha);
             } finally {
                 pose.popPose();
             }

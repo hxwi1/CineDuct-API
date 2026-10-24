@@ -74,10 +74,16 @@ final class Geometry {
          */
         final double planeOffset = (a.toVector().dot(normal) + b.toVector().dot(normal)) / 2.0;
 
+        /*
+         * ★ 宽高要 +1：玩家点的是**方块**，不是顶点。
+         *
+         * <p>点第 10 格和第 12 格，他圈到的是 10、11、12 三格（含首尾），而坐标差是 2 ——
+         * 少算一格正是"渲染出来比设置的少一格"。所以按"格数"算：差 + 1。
+         */
         final double aRight = a.toVector().dot(right);
         final double bRight = b.toVector().dot(right);
-        final double width = Math.abs(aRight - bRight);
-        final double height = Math.abs(a.getY() - b.getY());
+        final double width = Math.abs(aRight - bRight) + 1.0;
+        final double height = Math.abs(a.getY() - b.getY()) + 1.0;
         if (width < MIN_EDGE || height < MIN_EDGE) {
             throw new IllegalArgumentException(String.format(Locale.ROOT,
                     "选中的面积太小（%.2f × %.2f 格）：点两个**对角**，别点在同一个格子上", width, height));
