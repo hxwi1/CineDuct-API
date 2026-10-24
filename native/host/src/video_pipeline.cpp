@@ -60,10 +60,14 @@ constexpr int kMaxClockHeals = 8;
 /*
  * 音频僵死看门狗（见 maybeRepairAudio）。
  *
- * <p>为什么是 3 秒：与 MediaClock 的"音频停滞"判据同量级 —— 那个 3 秒决定"改挂钟"，
- * 这个 3 秒决定"去修它"。判僵死不需要更长的窗口：正常播放里内容位置每 20ms 都会前进。
+ * <p>为什么是 6 秒（原先 3 秒，实测误报太多）：判据用的是"**已写入**声卡的内容位置"，
+ * 而声卡环形缓冲写满后解码线程会正常阻塞（背压，见 AudioSource 的 writeUnlessSeeking）。
+ * 缓冲本身约 2.5 秒（再加设备侧 ~200ms），再算上首帧解码、AV 校正、客户端取帧慢这些
+ * 正常等待，3 秒的窗口几乎等于缓冲深度 —— 任何一次正常等待都会越线，于是反复误报
+ * "音频链没有产出"并触发一次会清缓冲的修复。给到 6 秒：覆盖缓冲 + 合理等待，
+ * 真僵死也能在可接受的时间里被发现。
  */
-constexpr int kAudioStuckSeconds = 3;
+constexpr int kAudioStuckSeconds = 6;
 /** 连续修复的最小间隔（一次 seek 落地 + 声卡重填至少几百毫秒，间隔太短只会互相踩）。 */
 constexpr int kAudioRepairIntervalSeconds = 5;
 /** 一次播放里最多自动修几次；到上限后只记账不再动（避免把坏链变成无限 seek 循环）。 */
@@ -911,6 +915,9 @@ void VideoPipeline::renderSeekStage() {
 
     // 时钟先作废：新纪元的第一帧到达时才重新锚定（见 beginEpoch）
     this->clock.invalidate();
+    // seek 之后音频内容位置可能回退/重扫：看门狗基准跟着重锚（见 maybeRepairAudio）
+    this->lastAudioContentMs = -1.0;
+    this->audioStuckSince = std::chrono::steady_clock::time_point{};
     this->epochStartPending = true;
     this->epochPendingIsFromSeek = true;    // 这个纪元是 seek 来的（供"定位没落地"判定）
     this->prerollTargetMs = target;
@@ -1683,6 +1690,14 @@ void VideoPipeline::maybeRepairAudio() {
         return;
     }
     /*
+     * 还没放出第一帧：音频链是**提前起播**的（可能领先一秒以上，4K 硬解初始化也慢），
+     * 缓冲写满后"写入位置"停止前进属于正常现象，不能拿它判僵死。
+     */
+    if (this->publishedCount.load() == 0) {
+        this->audioStuckSince = std::chrono::steady_clock::time_point{};
+        return;
+    }
+    /*
      * ★★ 片尾待命时**绝不修**（2026-10-18 现场，玩家看到的"有规律地重新播放/重启"）。
      *
      * <p>未循环放完时的链路状态是：视频链 EOF → {@link #idleAfterEnd} 把状态环的 ended 置 1
@@ -1710,8 +1725,26 @@ void VideoPipeline::maybeRepairAudio() {
         return;
     }
     const auto now = std::chrono::steady_clock::now();
-    if (content > this->lastAudioContentMs + 1.0) {   // 在前进（1ms 容差防浮点抖动）
-        this->lastAudioContentMs = content;
+    /*
+     * ★★ 基准是"上次检查时的内容位置"，**不是历史最大值**（2026-10 修）。
+     *
+     * <p>以前用 `content > lastAudioContentMs + 1` 判前进，而 last 只在前进时更新、
+     * seek / 重连后从不重置。只要内容位置往回跳（往后拖进度条、循环回卷、片头对表、
+     * 直播断流重连回到更早位置），content 就永远小于那个历史最大值 → 恒判"不前进"
+     * → 阈值一到就误报"音频链没有产出"，修复动作又发一次 seek（清缓冲）→ 继续误报，
+     * 每 5 秒一次、最多 8 次，听感就是反复断音。这就是"经常误判"的主因。
+     *
+     * <p>现在每轮检查都把基准刷成当前值：回退只会让**这一轮**不算前进，下一轮只要
+     * 正常写入（+1ms）就恢复，不会累积到阈值。
+     */
+    const bool hadBaseline = this->lastAudioContentMs >= 0.0;
+    const bool advanced = hadBaseline && content > this->lastAudioContentMs + 1.0;
+    this->lastAudioContentMs = content;
+    if (advanced) {
+        this->audioStuckSince = std::chrono::steady_clock::time_point{};
+        return;
+    }
+    if (!hadBaseline) {                     // 基准刚建立（起播 / seek 之后）：这轮不判
         this->audioStuckSince = std::chrono::steady_clock::time_point{};
         return;
     }
@@ -1728,8 +1761,10 @@ void VideoPipeline::maybeRepairAudio() {
     if (this->audioRepairCount.load() >= kMaxAudioRepairs) return;
 
     const int attempt = this->audioRepairCount.fetch_add(1) + 1;
+    const double stuckFor = std::chrono::duration<double>(now - this->audioStuckSince).count();
     this->lastAudioRepairAt = now;
     this->audioStuckSince = now;            // 修完重新记账，别连环触发
+    this->lastAudioContentMs = -1.0;        // 修复后重锚基准（否则会拿旧位置继续判"没前进"）
     const long long target = static_cast<long long>(this->clock.now());
     const long long seekTarget = this->audioSeekTargetMs(target);
     const bool chainFinished = this->audio->finished();
@@ -1753,9 +1788,9 @@ void VideoPipeline::maybeRepairAudio() {
     if (!requested) return;
     this->audioSink.flush();
     this->lastAudioDiscontinuityAt = now;   // 修复后那几秒的 AV 偏移读数在收敛，别拿去判定
-    std::printf("[host] ⚠ 音频链 %.0f 秒没有产出（读失败 %u 次 / 重连 %u 次 / %s）"
+    std::printf("[host] ⚠ 音频链 %.1f 秒没有产出（读失败 %u 次 / 重连 %u 次 / %s）"
                 "→ 已自动修复第 %d 次（目标 %lldms）\n",
-                std::chrono::duration<double>(now - this->audioStuckSince).count() + kAudioStuckSeconds,
+                stuckFor,
                 this->audio->readErrorCount(), this->audio->reconnectCount(),
                 chainFinished ? "链已到片尾/待命，已请求重开" : "链未到片尾，直接定位",
                 attempt, seekTarget);
