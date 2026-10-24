@@ -18,9 +18,13 @@ import java.util.Map;
  * 屏幕注册表：名字 → 几何 + 播放列表 + 进度。
  *
  * <p>这是"服务端只管状态"那部分的状态本体：**几何**（四角）、**放什么**（playlist + index）、
- * **放到哪**（锚点）。客户端只负责画和按距离开关播放。
+ * **放到哪**（进度锚点）。
  *
- * <p>持久化在插件数据目录的 {@code screens.yml}：服务器重启后屏幕还在，播放列表也在。
+ * <p><b>进度是服务端自己算的</b>：{@code 锚点位置 + (现在 − 锚点时刻)}。客户端不回传任何数据
+ * —— 它只是按锚点起播、按时钟自己放。这条设计的好处是没有"回报不可信"的问题，
+ * 代价是服务端不知道客户端到底卡了没有，所以播放列表推进要靠每项的**时长**（{@link #durations}）。
+ *
+ * <p>持久化在 {@code plugins/CinePlay/screens.yml}：重启后屏幕、播放列表、进度都在。
  */
 final class Screens {
 
@@ -28,14 +32,17 @@ final class Screens {
     static final class Screen {
         final String name;
         final List<String> playlist = new ArrayList<>();
+        /** 与 playlist 一一对应的时长（秒）；0 = 不知道，不自动推进。 */
+        final List<Integer> durations = new ArrayList<>();
         int index;
         /** 四角（环序：左上→右上→右下→左下）；空 = 还没选点。 */
         List<Location> corners = List.of();
-        /** 锚点（相对当前条目）。 */
+
+        /** 锚点：某个时刻应播到 positionMs。 */
         long positionMs;
+        long anchorWallMs;
         boolean paused;
-        /** 最近一次推进播放列表的时刻（防回执重复触发）。 */
-        long lastAdvanceAt;
+        boolean live;
 
         Screen(String name) {
             this.name = name;
@@ -43,8 +50,13 @@ final class Screens {
 
         String currentUrl() {
             if (this.playlist.isEmpty()) return "";
-            final int i = Math.floorMod(this.index, this.playlist.size());
-            return this.playlist.get(i);
+            return this.playlist.get(Math.floorMod(this.index, this.playlist.size()));
+        }
+
+        /** 当前项的时长（秒）；0 = 未知。 */
+        int currentDurationSec() {
+            if (this.durations.isEmpty()) return 0;
+            return this.durations.get(Math.floorMod(this.index, this.durations.size()));
         }
 
         String nextUrl() {
@@ -58,13 +70,24 @@ final class Screens {
             this.index = Math.floorMod(this.index - 1, this.playlist.size());
             return currentUrl();
         }
+
+        /** 现在应该播到哪（服务端权威，不依赖任何客户端回报）。 */
+        long currentPositionMs() {
+            if (this.paused || this.live) return this.positionMs;
+            return this.positionMs + Math.max(0L, System.currentTimeMillis() - this.anchorWallMs);
+        }
+
+        /** 把"当前算出来的位置"固化成一个新锚点（落盘/重载/切歌前都要先做一次）。 */
+        void reanchor() {
+            this.positionMs = currentPositionMs();
+            this.anchorWallMs = System.currentTimeMillis();
+        }
     }
 
     private final CinePlayPlugin plugin;
     private final Map<String, Screen> screens = new LinkedHashMap<>();
-    /** 有未落盘的改动（进度每 tick 都在变，不能一变就写盘）。 */
+    /** 有未落盘的改动（进度随时间走，不能一变就写盘）。 */
     private boolean dirty;
-    /** 上一次落盘的时刻（诊断用）。 */
     private long lastSaveAt;
 
     Screens(CinePlayPlugin plugin) {
@@ -98,6 +121,10 @@ final class Screens {
         return new ArrayList<>(this.screens.keySet());
     }
 
+    synchronized Map<String, Screen> all() {
+        return new LinkedHashMap<>(this.screens);
+    }
+
     private File file() {
         return new File(this.plugin.getDataFolder(), "screens.yml");
     }
@@ -114,9 +141,18 @@ final class Screens {
             if (s == null) continue;
             final Screen screen = new Screen(key.toLowerCase(Locale.ROOT));
             screen.playlist.addAll(s.getStringList("playlist"));
+            for (Object o : s.getList("durations", List.of())) {
+                screen.durations.add(o instanceof Number n ? n.intValue() : 0);
+            }
             screen.index = s.getInt("index", 0);
             screen.positionMs = s.getLong("positionMs", 0L);
             screen.paused = s.getBoolean("paused", false);
+            screen.live = s.getBoolean("live", false);
+            /*
+             * 锚点时刻用"现在"：存档里存的是关服那一刻的位置，重启后应当从那里继续走，
+             * 而不是把停机这段时间也算成"播过去了"。
+             */
+            screen.anchorWallMs = System.currentTimeMillis();
             final String world = s.getString("world", "");
             final World w = world.isEmpty() ? null : Bukkit.getWorld(world);
             final List<List<Double>> raw = new ArrayList<>();
@@ -144,9 +180,11 @@ final class Screens {
         for (Screen screen : this.screens.values()) {
             final String path = "screens." + screen.name;
             yaml.set(path + ".playlist", screen.playlist);
+            yaml.set(path + ".durations", screen.durations);
             yaml.set(path + ".index", screen.index);
-            yaml.set(path + ".positionMs", screen.positionMs);
+            yaml.set(path + ".positionMs", screen.currentPositionMs());
             yaml.set(path + ".paused", screen.paused);
+            yaml.set(path + ".live", screen.live);
             if (!screen.corners.isEmpty()) {
                 final Location first = screen.corners.getFirst();
                 yaml.set(path + ".world", first.getWorld() == null ? "" : first.getWorld().getName());
@@ -162,41 +200,47 @@ final class Screens {
             }
             yaml.save(file());
         } catch (Exception e) {
-            this.dirty = true;      // 写失败就留着脏标记，下一轮 autosave 再试
+            this.dirty = true;
             this.plugin.getLogger().warning("保存 screens.yml 失败: " + e.getMessage());
         }
     }
 
-    // ---- 进度持久化 ----
+    /** 定时任务调（每 20 秒）：把"正在播"的屏固化成锚点并落盘。 */
+    synchronized void autosave() {
+        boolean any = false;
+        final long now = System.currentTimeMillis();
+        for (Screen screen : this.screens.values()) {
+            if (screen.playlist.isEmpty() || screen.paused) continue;
+            // 位置随时间走，落盘前先固化，否则存下来的还是上一次锚点
+            if (now - screen.anchorWallMs >= 1000L) {
+                screen.reanchor();
+                any = true;
+            }
+        }
+        if (any || this.dirty) save();
+    }
 
     /**
-     * 把客户端报上来的进度写进内存里的屏幕状态（**不立刻落盘**）。
+     * 按"每项时长"推进播放列表（每秒钟由插件调一次）。
      *
-     * <p>为什么要这条：播放进度是服务端唯一"自己不会知道"的状态 —— 它只知道给了哪个 url、
-     * 从哪一刻起播。不回写的话，重启之后锚点永远是上一次手动设置的值（通常是 0），
-     * 表现为"重启后从头开始放"。
-     *
-     * <p>只在变化超过 1 秒或暂停状态翻了才记，避免每 2 秒的心跳都改状态。
+     * <p>为什么必须靠时长：服务端不回读客户端状态，所以"这一条放完了没有"只能用
+     * {@code 当前项时长} 与自己算的位置比。没填时长的项（0）不会自动推进 —— 宁可停住，
+     * 也不要"看着像放完了"就跳。
      */
-    synchronized void noteProgress(String slot, long positionMs, boolean paused) {
-        final Screen screen = get(slot);
-        if (screen == null || screen.playlist.isEmpty()) return;
-        final boolean pauseChanged = screen.paused != paused;
-        final boolean moved = Math.abs(positionMs - screen.positionMs) >= 1000L;
-        if (!pauseChanged && !moved) return;
-        screen.positionMs = Math.max(0L, positionMs);
-        screen.paused = paused;
-        this.dirty = true;
-    }
-
-    /** 定时任务调：有脏数据才写盘（默认每 20 秒一次，见插件 onEnable）。 */
-    synchronized void autosave() {
-        if (this.dirty) save();
-    }
-
-    /** 诊断：最近一次落盘多久之前。 */
-    synchronized long sinceLastSaveMs() {
-        return this.lastSaveAt <= 0 ? -1L : System.currentTimeMillis() - this.lastSaveAt;
+    synchronized void tickPlaylist() {
+        for (Screen screen : this.screens.values()) {
+            final int duration = screen.currentDurationSec();
+            if (duration <= 0 || screen.playlist.size() < 2 || screen.paused) continue;
+            if (screen.currentPositionMs() < duration * 1000L) continue;
+            screen.reanchor();
+            screen.nextUrl();
+            screen.positionMs = 0L;
+            screen.anchorWallMs = System.currentTimeMillis();
+            save();
+            broadcastAnchor(screen);
+            this.plugin.getLogger().info("播放列表推进 → " + screen.name
+                    + " 第 " + (screen.index + 1) + " 项（上一项按时长 " + duration + "s 结束）");
+        }
     }
 
     // =====================================================================
@@ -214,6 +258,20 @@ final class Screens {
         this.plugin.getLogger().info("下发屏幕几何 " + screen.name + " → " + sent + " 个客户端");
     }
 
+    /** 下发进度锚点（换源 / seek / 暂停 / 播放列表推进）。 */
+    void broadcastAnchor(Screen screen) {
+        final String url = screen.currentUrl();
+        if (url.isEmpty() || screen.corners.isEmpty()) return;
+        final String json = jsonAnchor(screen.name, url, screen.currentPositionMs(),
+                screen.paused, screen.live);
+        int sent = 0;
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            if (this.plugin.sendControlJson(p, json)) sent++;
+        }
+        this.plugin.getLogger().info("下发锚点 " + screen.name + " → " + safeUrl(url)
+                + " @" + screen.currentPositionMs() + "ms → " + sent + " 个客户端");
+    }
+
     /** 只发给一个人（玩家进服时补投：他不在的时候建的屏，几何与锚点都要补）。 */
     void sendTo(Player player, Screen screen) {
         if (screen.corners.size() == 4) {
@@ -222,7 +280,7 @@ final class Screens {
         final String url = screen.currentUrl();
         if (!url.isEmpty()) {
             this.plugin.sendControlJson(player,
-                    jsonAnchor(screen.name, url, screen.positionMs, screen.paused, false));
+                    jsonAnchor(screen.name, url, screen.currentPositionMs(), screen.paused, screen.live));
         }
     }
 
@@ -230,34 +288,6 @@ final class Screens {
         if (screen.corners.isEmpty()) return "minecraft:overworld";
         final Location first = screen.corners.getFirst();
         return first.getWorld() == null ? "minecraft:overworld" : first.getWorld().getName();
-    }
-
-    /** 下发进度锚点（换源 / seek / 暂停 / 播放列表推进）。 */
-    void broadcastAnchor(Screen screen) {
-        final String url = screen.currentUrl();
-        if (url.isEmpty() || screen.corners.isEmpty()) return;
-        final String json = jsonAnchor(screen.name, url, screen.positionMs, screen.paused, false);
-        int sent = 0;
-        for (Player p : Bukkit.getOnlinePlayers()) {
-            if (this.plugin.sendControlJson(p, json)) sent++;
-        }
-        this.plugin.getLogger().info("下发锚点 " + screen.name + " → " + CineGateStub.safeUrl(url)
-                + " @" + screen.positionMs + "ms → " + sent + " 个客户端");
-    }
-
-    /** 客户端回执 ENDED 时推进播放列表（同一条目 3 秒内只推进一次）。 */
-    synchronized void noteEnded(String slot) {
-        final Screen screen = get(slot);
-        if (screen == null || screen.playlist.size() < 2) return;
-        final long now = System.currentTimeMillis();
-        if (now - screen.lastAdvanceAt < 3000L) return;
-        screen.lastAdvanceAt = now;
-        screen.positionMs = 0L;
-        screen.paused = false;
-        screen.nextUrl();
-        save();
-        broadcastAnchor(screen);
-        this.plugin.getLogger().info("播放列表推进 → " + screen.name + " 第 " + (screen.index + 1) + " 项");
     }
 
     // =====================================================================
@@ -292,13 +322,11 @@ final class Screens {
         return String.format(Locale.ROOT, "%.3f", v);
     }
 
-    /** 只为了日志好看：URL 太长/带凭证时截断。 */
-    private static final class CineGateStub {
-        static String safeUrl(String url) {
-            if (url == null) return "null";
-            final int q = url.indexOf('?');
-            final String head = q < 0 ? url : url.substring(0, q);
-            return head.length() > 80 ? head.substring(0, 80) + "…" : head;
-        }
+    /** 日志里不打印查询串（可能带凭证）。 */
+    static String safeUrl(String url) {
+        if (url == null) return "null";
+        final int q = url.indexOf('?');
+        final String head = q < 0 ? url : url.substring(0, q);
+        return head.length() > 80 ? head.substring(0, 80) + "…" : head;
     }
 }

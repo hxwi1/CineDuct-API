@@ -1,4 +1,4 @@
-package dev.mediafix.net;
+package dev.cineduct.net;
 
 import dev.mediafix.CineDuct;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -8,27 +8,26 @@ import net.minecraft.resources.ResourceLocation;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
-import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 import java.nio.charset.StandardCharsets;
 
 /**
- * 服务端控制通道的两条 payload（{@code docs/paper-control-payload.md} §2）。
+ * 服务端控制通道（单向下行，{@code docs/paper-control-payload.md}）。
+ *
+ * <p><b>这个通道只有下行</b>：服务端广播"这块屏在哪、放什么、从哪一刻起播"，
+ * 客户端收下就够 —— 播放进度由服务端用"锚点 + 流逝时间"自己算，客户端**不需要回传任何数据**
+ * （省掉一条上行通道，也省掉"客户端回报不可信"这类问题）。
  *
  * <h2>两个关键实现事实（都是踩过的坑，别改）</h2>
  *
- * <p><b>① 必须注册成 {@code optional()}</b>：NeoForge 在连到**非 NeoForge 服务器**（Paper / 原版）
- * 时会走 {@code initializeOtherConnection}，用"服务端没有任何通道"去协商一遍客户端注册表 ——
- * 只要有一个**非 optional** 的通道，客户端会直接断开连接。所以这两个块都走 {@code registrar.optional()}。
+ * <p><b>① 必须注册成 {@code optional()}</b>：NeoForge 在连到**非 NeoForge 服务器**（Paper / 原版）时
+ * 会走 {@code initializeOtherConnection}，用"服务端没有任何通道"去协商客户端注册表 ——
+ * 只要有一个**非 optional** 的通道，客户端会直接断开连接。
  *
  * <p><b>② 编解码必须是"裸字节"</b>：Paper 插件的 {@code sendPluginMessage} 发的是**原样 UTF-8 字节**，
- * 没有长度前缀。用 {@code ByteBufCodecs.STRING_UTF8} 会写出 VarInt 长度前缀，
- * 到对面就解不出来。这里自己写"读到底"的编解码。
- *
- * <p>注册只在**客户端**做（{@link Dist#CLIENT}）：服务端不需要这条通道 ——
- * 收到未注册 id 的服务器会把它当成 {@code DiscardedPayload} 忽略，不会踢人。
+ * 没有长度前缀。用 {@code ByteBufCodecs.STRING_UTF8} 会写出 VarInt 长度前缀，到对面就解不出来。
  */
 @EventBusSubscriber(modid = CineDuct.MODID, bus = EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class CineDuctNetwork {
@@ -39,10 +38,6 @@ public final class CineDuctNetwork {
     private CineDuctNetwork() {
     }
 
-    // =====================================================================
-    // payload 定义
-    // =====================================================================
-
     /** 服务端 → 客户端：一条控制报文（JSON 文本）。 */
     public record Control(String json) implements CustomPacketPayload {
         public static final CustomPacketPayload.Type<Control> TYPE =
@@ -51,21 +46,6 @@ public final class CineDuctNetwork {
         public static final StreamCodec<RegistryFriendlyByteBuf, Control> STREAM_CODEC =
                 StreamCodec.of((buf, value) -> writeRaw(buf, value.json()),
                         buf -> new Control(readRaw(buf)));
-
-        @Override
-        public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
-            return TYPE;
-        }
-    }
-
-    /** 客户端 → 服务端：状态回执（JSON 文本；插件可用 Bukkit Messenger 读，不读也不影响下行）。 */
-    public record State(String json) implements CustomPacketPayload {
-        public static final CustomPacketPayload.Type<State> TYPE =
-                new CustomPacketPayload.Type<>(ResourceLocation.fromNamespaceAndPath(CineDuct.MODID, "state"));
-
-        public static final StreamCodec<RegistryFriendlyByteBuf, State> STREAM_CODEC =
-                StreamCodec.of((buf, value) -> writeRaw(buf, value.json()),
-                        buf -> new State(readRaw(buf)));
 
         @Override
         public CustomPacketPayload.Type<? extends CustomPacketPayload> type() {
@@ -93,25 +73,11 @@ public final class CineDuctNetwork {
         return new String(bytes, StandardCharsets.UTF_8);
     }
 
-    // =====================================================================
-    // 注册
-    // =====================================================================
-
     @SubscribeEvent
     public static void register(RegisterPayloadHandlersEvent event) {
         final PayloadRegistrar registrar = event.registrar("1").optional();
         registrar.playToClient(Control.TYPE, Control.STREAM_CODEC, (payload, context) ->
-                context.enqueueWork(() -> CineControlHandler.handleOnClient(payload.json())));
-        registrar.playToServer(State.TYPE, State.STREAM_CODEC, (payload, context) -> {
-            // NeoForge 服务端（装了本模组）收到回执：目前只记日志，插件侧读法见文档 §6。
-            CineDuct.LOGGER.debug("[CineDuct] 收到客户端状态回执（服务端暂无消费者）: {}", payload.json());
-        });
-        CineDuct.LOGGER.info("[CineDuct] 服务端控制通道已注册（cineduct:control / cineduct:state，optional）");
-    }
-
-    /** 发一条状态回执（没有连接时静默丢弃）。 */
-    static void sendState(String json) {
-        if (json == null || json.isEmpty()) return;
-        PacketDistributor.sendToServer(new State(json));
+                context.enqueueWork(() -> dev.mediafix.net.CineControlHandler.handleOnClient(payload.json())));
+        CineDuct.LOGGER.info("[CineDuct] 服务端控制通道已注册（cineduct:control，optional，单向）");
     }
 }

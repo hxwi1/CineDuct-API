@@ -387,7 +387,6 @@ public final class CineDuct {
             // 子进程崩了/卡死了就自动重启（判定很便宜，重启在后台线程）
             Sessions.tickHealth();
             // 服务端控制通道的状态回执（心跳 / 状态跳变；没启用时是一次空判断）
-            dev.mediafix.net.CineStateUplink.tick();
             // 虚拟屏的距离门控：进范围开播、出范围释放（没有虚拟屏时是一次空判断）
             dev.mediafix.client.SlotPlayback.tick();
         } catch (Throwable t) {

@@ -22,6 +22,7 @@ import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.UnaryOperator;
 
 /**
@@ -135,10 +136,10 @@ final class CinePlayCommands {
                 .then(Commands.argument("screen", StringArgumentType.word())
                         .then(Commands.argument("url", StringArgumentType.greedyString())
                                 .executes(ctx -> add(ctx, StringArgumentType.getString(ctx, "screen"),
-                                        StringArgumentType.getString(ctx, "url")))))
+                                        StringArgumentType.getString(ctx, "url"), 0))))
                 .then(Commands.argument("url", StringArgumentType.greedyString())
                         .executes(ctx -> add(ctx, targetScreenName(ctx.getSource()),
-                                StringArgumentType.getString(ctx, "url")))));
+                                StringArgumentType.getString(ctx, "url"), 0))));
 
         root.then(Commands.literal("playlist")
                 .executes(ctx -> playlist(ctx, targetScreenName(ctx.getSource())))
@@ -322,7 +323,8 @@ final class CinePlayCommands {
     }
 
     /** {@code /cineplay add [屏幕名] <url>}：追加到某块屏幕的播放列表（空列表则立刻开始播）。 */
-    private int add(CommandContext<CommandSourceStack> ctx, String name, String url) throws CommandSyntaxException {
+    private int add(CommandContext<CommandSourceStack> ctx, String name, String url, int durationSec)
+            throws CommandSyntaxException {
         final CommandSender sender = ctx.getSource().getSender();
         final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null) {
@@ -331,6 +333,7 @@ final class CinePlayCommands {
         }
         final boolean wasEmpty = screen.playlist.isEmpty();
         screen.playlist.add(url);
+        screen.durations.add(Math.max(0, durationSec));
         if (wasEmpty) {
             screen.index = 0;
             screen.positionMs = 0L;
@@ -441,29 +444,41 @@ final class CinePlayCommands {
         return 1;
     }
 
+    /**
+     * {@code /cineplay status [玩家]}：通道状态 + **服务端自己算的**进度。
+     *
+     * <p>客户端不回传数据，所以这里显示的是"服务端认为应该播到哪"，而不是"客户端实际播到哪"。
+     * 两者不一致（客户端卡了/关了）只能从客户端侧看（{@code /cineduct packet status}）。
+     */
     private int status(CommandContext<CommandSourceStack> ctx, Player explicit)
             throws CommandSyntaxException {
         final CommandSender sender = ctx.getSource().getSender();
         final Player target = explicit != null ? explicit : self(ctx);
 
         Messages.ok(sender, target.getName() + "  " + this.plugin.channelHint(target));
-        final StateSnapshot snapshot = this.plugin.stateOf(target);
-        final long age = this.plugin.stateAgeMs(target);
-        if (snapshot == null || snapshot.slots().isEmpty() && (snapshot.err() == null || snapshot.err().isEmpty())) {
-            Messages.warn(sender, age < 0
-                    ? "还没收到过回执（闸门没开 / 没装模组 / 还没播放过）"
-                    : "最近一条回执是 " + (age / 1000) + " 秒前，里面没有 slot");
-            Messages.note(sender, "客户端侧检查: /cineduct packet status");
+        final Map<String, Screens.Screen> all = this.plugin.screens().all();
+        if (all.isEmpty()) {
+            Messages.warn(sender, "还没有任何屏幕（/cineplay create 开始建一块）");
             return 0;
         }
-        if (snapshot.err() != null && !snapshot.err().isEmpty()) {
-            Messages.warn(sender, "最近一次错误: " + snapshot.err());
+        for (Screens.Screen screen : all.values()) {
+            final String url = screen.currentUrl();
+            Messages.note(sender, screen.name
+                    + "：第 " + (screen.playlist.size() == 0 ? 0 : screen.index + 1) + "/"
+                    + screen.playlist.size() + " 项"
+                    + (screen.playlist.isEmpty() ? "（空）" : "  " + mmss(screen.currentPositionMs())
+                            + (screen.currentDurationSec() > 0
+                                    ? "/" + mmss(screen.currentDurationSec() * 1000L) : "/?"))
+                    + (screen.paused ? "  暂停" : "")
+                    + (url.isEmpty() ? "" : "  " + Screens.safeUrl(url)));
         }
-        for (StateSnapshot.Slot slot : snapshot.slots()) {
-            sender.sendMessage(Component.text("  ").append(slot.line()));
-        }
-        Messages.note(sender, "回执 " + (age / 1000) + " 秒前  ack=" + snapshot.ack() + "  seq=" + snapshot.seq());
         return 1;
+    }
+
+    private static String mmss(long ms) {
+        if (ms < 0) return "?";
+        final long total = ms / 1000;
+        return String.format(java.util.Locale.ROOT, "%02d:%02d", total / 60, total % 60);
     }
 
     private int help(CommandContext<CommandSourceStack> ctx) {

@@ -12,32 +12,26 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * CinePlay：用服务端指令控制**装了 CineDuct 模组**的客户端播放。
  *
- * <p>职责刻意很薄：拼 JSON → 走 Bukkit 插件消息发出去 → 把客户端回执存成
- * {@link StateSnapshot}。所有播放语义都在客户端（模组的 {@code dev.mediafix.net}），
- * 协议见 {@code docs/paper-control-payload.md}。
+ * <p>职责很薄：拼 JSON → 走 Bukkit 插件消息广播 → 自己维护进度。所有播放语义都在客户端
+ * （模组的 {@code dev.mediafix.net}），协议见 {@code docs/paper-control-payload.md}。
  *
- * <p><b>不需要模组的 jar</b>：两条通道都是普通插件消息，编译期只依赖 Paper API。
+ * <p><b>单向通道</b>：服务端只广播，客户端**不回传任何数据**。播放进度由服务端用
+ * "锚点 + 流逝时间"自己算（{@link Screens.Screen#currentPositionMs()}），于是不存在
+ * "客户端回报不可信/被伪造"这类问题；代价是自动推进要靠每项的时长（{@code durations}）。
  *
- * <p>指令注册走 `LifecycleEvents.COMMANDS`（Paper 插件的官方做法，
- * 见 docs.papermc.io/paper/dev/command-api），因此 {@code paper-plugin.yml} 里**没有**
- * {@code commands:} 段。
+ * <p><b>不需要模组的 jar</b>：编译期只依赖 Paper API。
  */
 public final class CinePlayPlugin extends JavaPlugin {
 
     /** 下行：服务端 → 客户端。 */
     public static final String CHANNEL_CONTROL = "cineduct:control";
-    /** 上行：客户端 → 服务端（状态跳变 + 每 2 秒心跳）。 */
-    public static final String CHANNEL_STATE = "cineduct:state";
 
     /** 单包上限：Bukkit 自定义通道约 32 KB；客户端那边也按 30 KB 校验。 */
     private static final int MAX_BYTES = 30 * 1024;
 
-    /** 每个玩家最近一条回执（解析后）。 */
-    private final Map<UUID, StateSnapshot> states = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> stateAt = new ConcurrentHashMap<>();
-    /** 每个玩家"当前操作的 slot"（`/cineplay slot` 改它）。 */
+    /** 每个玩家"当前操作的 slot/屏幕"（`/cineplay slot` 改它）。 */
     private final Map<UUID, String> slots = new ConcurrentHashMap<>();
-    /** 服务端序号：客户端回执里的 ack 就是它。 */
+    /** 服务端序号（客户端原样回显在日志里，便于对账）。 */
     private final AtomicLong seq = new AtomicLong();
     /** `play` 的冷却，防止手滑连点把客户端刷成反复重开。 */
     private final Map<UUID, Long> lastPlayAt = new ConcurrentHashMap<>();
@@ -50,7 +44,6 @@ public final class CinePlayPlugin extends JavaPlugin {
     public void onEnable() {
         saveDefaultConfig();
         getServer().getMessenger().registerOutgoingPluginChannel(this, CHANNEL_CONTROL);
-        getServer().getMessenger().registerIncomingPluginChannel(this, CHANNEL_STATE, this::onStateMessage);
 
         this.screens = new Screens(this);
         this.screens.load();
@@ -63,81 +56,54 @@ public final class CinePlayPlugin extends JavaPlugin {
                 io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents.COMMANDS,
                 event -> this.commands.register(event.registrar()));
 
-        /*
-         * 进度持久化：客户端每 2 秒报一次位置，但**不能**每报一次就写盘。
-         * 这里每 20 秒把"有改动"的屏幕落一次盘；关服时 onDisable 还会强制存一次。
-         */
+        /* 每秒：按"每项时长"推进播放列表（服务端自己算位置，不依赖客户端回报）。 */
+        getServer().getScheduler().runTaskTimer(this, () -> this.screens.tickPlaylist(), 20L, 20L);
+        /* 每 20 秒：把正在播的屏固化成新锚点并落盘（进度随时间走，不能一变就写盘）。 */
         getServer().getScheduler().runTaskTimer(this, () -> this.screens.autosave(), 400L, 400L);
 
-        getLogger().info("CinePlay 已启用：下行 " + CHANNEL_CONTROL + "，上行 " + CHANNEL_STATE
-                + "（客户端需要在 cineduct-packet.json 里打开闸门；屏幕数据存 plugins/CinePlay/screens.yml）");
+        getLogger().info("CinePlay 已启用：下行 " + CHANNEL_CONTROL
+                + "（单向；屏幕数据存 plugins/CinePlay/screens.yml）");
     }
 
     @Override
     public void onDisable() {
         getServer().getMessenger().unregisterOutgoingPluginChannel(this, CHANNEL_CONTROL);
-        getServer().getMessenger().unregisterIncomingPluginChannel(this, CHANNEL_STATE);
         if (this.screens != null) this.screens.save();
-        this.states.clear();
-        this.stateAt.clear();
         this.slots.clear();
         this.lastPlayAt.clear();
-    }
-
-    Screens screens() {
-        return this.screens;
-    }
-
-    /** 让所有客户端把某个 slot 关掉（删屏幕时用：几何没了画不出来，但播放器要显式关）。 */
-    void broadcastClose(String slot) {
-        final String json = ControlMessage.of("close", slot).seq(nextSeq()).token(token()).json();
-        for (Player p : getServer().getOnlinePlayers()) sendControlJson(p, json);
-    }
-
-    Selector selector() {
-        return this.selector;
-    }
-
-    /** 发送一段已经拼好的 JSON（几何/锚点由 {@link Screens} 拼，字段多且结构固定）。 */
-    boolean sendControlJson(Player player, String json) {        if (player == null || json == null) return false;
-        final byte[] data = json.getBytes(StandardCharsets.UTF_8);
-        if (data.length > MAX_BYTES) {
-            getLogger().warning("报文过大（" + data.length + " 字节），已丢弃");
-            return false;
-        }
-        if (isRequireChannel() && !player.getListeningPluginChannels().contains(CHANNEL_CONTROL)) return false;
-        player.sendPluginMessage(this, CHANNEL_CONTROL, data);
-        return true;
     }
 
     // =====================================================================
     // 发送
     // =====================================================================
 
-    /**
-     * 给一个玩家发一条控制报文。
-     *
-     * @return true = 已交给网络层（不代表客户端接受；接受与否看回执）
-     */
+    /** 给一个玩家发一条控制报文。 */
     boolean sendControl(Player player, ControlMessage message) {
-        if (player == null || message == null) return false;
-        final byte[] data = message.json().getBytes(StandardCharsets.UTF_8);
+        return message != null && sendControlJson(player, message.json());
+    }
+
+    /** 发送一段已经拼好的 JSON（几何/锚点字段多且结构固定，由 {@link Screens} 拼）。 */
+    boolean sendControlJson(Player player, String json) {
+        if (player == null || json == null) return false;
+        final byte[] data = json.getBytes(StandardCharsets.UTF_8);
         if (data.length > MAX_BYTES) {
-            getLogger().warning("报文过大（" + data.length + " 字节），已丢弃：" + message.op());
+            getLogger().warning("报文过大（" + data.length + " 字节），已丢弃");
             return false;
         }
         /*
-         * 是否要求客户端先通告监听这个通道。
-         *
-         * 默认 false（见 config.yml）：NeoForge 客户端会不会通过 Bukkit 的 register 机制
-         * 把通道报上来，各版本行为不一致；拿它当硬门禁会出现"客户端明明装了却发不出去"。
-         * 发给没人监听的通道对原版客户端无副作用（服务端只会在日志里看到一条 ignored）。
+         * 默认不检查客户端有没有通告通道：NeoForge 客户端是否通过 Bukkit 的 register 机制
+         * 把通道报上来，各版本行为不一致；拿它当硬门禁会出现"客户端装了也发不出去"。
+         * 发给没人监听的通道对原版客户端无副作用。
          */
-        if (isRequireChannel() && !player.getListeningPluginChannels().contains(CHANNEL_CONTROL)) {
-            return false;
-        }
+        if (isRequireChannel() && !player.getListeningPluginChannels().contains(CHANNEL_CONTROL)) return false;
         player.sendPluginMessage(this, CHANNEL_CONTROL, data);
         return true;
+    }
+
+    /** 让所有客户端把某个 slot 关掉（删屏幕时用）。 */
+    void broadcastClose(String slot) {
+        final String json = ControlMessage.of("close", slot).seq(nextSeq()).token(token()).json();
+        for (Player p : getServer().getOnlinePlayers()) sendControlJson(p, json);
     }
 
     long nextSeq() {
@@ -161,11 +127,6 @@ public final class CinePlayPlugin extends JavaPlugin {
         return getConfig().getBoolean("requireChannel", false);
     }
 
-    boolean logState() {
-        return getConfig().getBoolean("logState", true);
-    }
-
-    /** `play` 的最小间隔（毫秒）；0 = 不限制。 */
     long playCooldownMs() {
         return Math.max(0L, getConfig().getLong("playCooldownMs", 1500L));
     }
@@ -192,45 +153,21 @@ public final class CinePlayPlugin extends JavaPlugin {
         return false;
     }
 
-    /** 重载配置（`/cineplay reload`）。 */
     void reloadAll() {
         reloadConfig();
         this.commands.reload();
     }
 
     // =====================================================================
-    // 上行回执
+    // 配件
     // =====================================================================
 
-    private void onStateMessage(String channel, Player player, byte[] data) {
-        if (player == null || data == null || !CHANNEL_STATE.equals(channel)) return;
-        final StateSnapshot snapshot = StateSnapshot.parse(new String(data, StandardCharsets.UTF_8));
-        this.states.put(player.getUniqueId(), snapshot);
-        this.stateAt.put(player.getUniqueId(), System.currentTimeMillis());
-        // 播放列表推进：客户端报 ENDED 就换下一项（Screens 内部有 3 秒去抖）
-        for (StateSnapshot.Slot slot : snapshot.slots()) {
-            if ("ENDED".equals(slot.state())) this.screens.noteEnded(slot.slot());
-            // 进度回写：服务端自己不知道"放到哪了"，只能听客户端报（每 20 秒才落一次盘）
-            else if (slot.positionMs() >= 0) this.screens.noteProgress(slot.slot(), slot.positionMs(), "PAUSED".equals(slot.state()));
-        }
-        if (logState()) {
-            final StringBuilder sb = new StringBuilder("[state] ").append(player.getName());
-            if (snapshot.err() != null && !snapshot.err().isEmpty()) sb.append("  err=").append(snapshot.err());
-            for (StateSnapshot.Slot s : snapshot.slots()) {
-                sb.append("  ").append(s.slot()).append('=').append(s.state())
-                        .append('@').append(s.positionMs()).append("ms");
-            }
-            getLogger().info(sb.toString());
-        }
+    Screens screens() {
+        return this.screens;
     }
 
-    StateSnapshot stateOf(Player player) {
-        return player == null ? null : this.states.get(player.getUniqueId());
-    }
-
-    long stateAgeMs(Player player) {
-        final Long at = player == null ? null : this.stateAt.get(player.getUniqueId());
-        return at == null ? -1L : System.currentTimeMillis() - at;
+    Selector selector() {
+        return this.selector;
     }
 
     /** 一句话诊断：这个玩家能不能收到控制。 */
