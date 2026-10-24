@@ -298,6 +298,21 @@ public final class ScreenClientState {
         }
 
         if (entity.isPaused() || session.isPauseWanted() || !session.readyForDisplay()) return;
+        /*
+         * ★ 子进程正在"等缓存"时，**不许**用安全网去追服务端。
+         *
+         * <p>闸门就是"本地位置主动停住、等数据/等游戏来取帧"。这段时间里本地位置必然
+         * 落后于服务端权威位置 —— 而这正是安全网（DRIFT_NET_MS）想修的那种偏差。
+         * 于是会出现"闸门刚要起作用 → 安全网判它落后 → seek 回去 → 缓冲全清、重连 CDN"，
+         * 一次卡顿换来一次真 seek，比原来的丢帧更糟。
+         *
+         * <p>所以闸门期间直接跳过判定；闸门结束后照常判定（滞后真超过 {@link #DRIFT_NET_MS}
+         * 还是要纠，否则多人同屏会永久错开）。
+         */
+        if (session.hostWaitingForBuffer()) {
+            this.lastSyncAt = System.currentTimeMillis();   // 别让限流窗口在闸门期间空转
+            return;
+        }
         final long target = entity.projectedPositionMs();
         final long diff = target - session.timeMs();
         if (Math.abs(diff) <= DRIFT_NET_MS) return;

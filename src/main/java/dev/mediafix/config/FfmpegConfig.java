@@ -112,6 +112,45 @@ public final class FfmpegConfig {
     /** cineduct-host.exe 路径；空 = 自动在 &lt;游戏目录&gt;/cineduct-host/ 等处查找。 */
     public static String hostPath = "";
 
+    // ---- 缓冲与"等缓存"闸门（子进程侧的钱；见 docs/PLAN-preload-buffer.md）----
+
+    /**
+     * 目标缓冲水位（毫秒）：子进程包队列里"首尾 PTS 跨度"的上限 = **提前缓存几秒**。
+     *
+     * <p>它的意义不是"多占内存"（压缩数据很小：1080p 8Mbps 约 4MB/4 秒，
+     * 4K 25Mbps 约 12MB/4 秒），而是"网络抖一下还有存货，不用立刻停下等"。
+     * 设得越大抗抖动越强，代价是 seek 之后要重新攒这么长的缓冲、以及内存线性增长。
+     *
+     * <p>0 = 交给子进程默认（4000）；设成负数没有意义，这里按 0 处理。
+     */
+    public static int bufferTargetMs = 4000;
+
+    /**
+     * 起播预缓冲（毫秒）：第一帧解出来后先攒够这么多再开播（同时放声卡）。
+     *
+     * <p>以前首帧一到就开播，此时缓冲里几乎是空的 —— 开头几秒最容易卡。
+     * 代价是起播晚最多这么久；网络慢时子进程会自己按水位上限与超时兜底，
+     * 不会真的卡死等满。0 = 不起播预缓冲（立刻播）。
+     */
+    public static int prerollMs = 1500;
+
+    /**
+     * 卡顿闸门（毫秒）：**游戏进程连续这么久没来取画面**，子进程就把时钟与声卡冻住等它，
+     * 恢复后从同一位置接着放 —— 而不是让位置继续往前走、把积压的帧全按"迟到"丢掉。
+     *
+     * <p>这就是"客户端卡顿时等缓存、不丢帧追赶"的开关。设成 0 = 关掉这条判据
+     * （只保留"供给见底才等"那条）。想彻底关掉闸门请用 {@link #bufferGate}。
+     */
+    public static int stallGateMs = 1500;
+
+    /**
+     * 缓冲闸门总开关（默认开）。
+     *
+     * <p>关掉之后行为回到"位置永远按主时钟走"：缓冲只影响"卡不卡"，不影响"跳不跳"。
+     * 怀疑"卡一下之后声音停了一下"是闸门造成的话，把它关掉做对照实验。
+     */
+    public static boolean bufferGate = true;
+
     // ---- 音频输出形态（子进程声卡直出 / 杜比全景声直通）----
 
     /**
@@ -161,6 +200,10 @@ public final class FfmpegConfig {
         if (map.get("gpuHostEnabled") instanceof Boolean b) gpuHostEnabled = b;
         if (map.get("hostSlots") instanceof Number n) hostSlots = Math.max(2, Math.min(8, n.intValue()));
         if (map.get("hostPath") instanceof String s) hostPath = s;
+        if (map.get("bufferTargetMs") instanceof Number n) bufferTargetMs = Math.max(0, n.intValue());
+        if (map.get("prerollMs") instanceof Number n) prerollMs = Math.max(0, n.intValue());
+        if (map.get("stallGateMs") instanceof Number n) stallGateMs = Math.max(0, n.intValue());
+        if (map.get("bufferGate") instanceof Boolean b) bufferGate = b;
         if (map.get("audioMode") instanceof String s) audioMode = s;
         if (map.get("audioDevice") instanceof String s) audioDevice = s;
                 }
@@ -193,6 +236,10 @@ public final class FfmpegConfig {
         map.put("gpuHostEnabled", gpuHostEnabled);
         map.put("hostSlots", hostSlots);
         map.put("hostPath", hostPath);
+        map.put("bufferTargetMs", bufferTargetMs);
+        map.put("prerollMs", prerollMs);
+        map.put("stallGateMs", stallGateMs);
+        map.put("bufferGate", bufferGate);
         map.put("audioMode", audioMode);
         map.put("audioDevice", audioDevice);
             Files.write(CFG, GSON.toJson(map).getBytes(StandardCharsets.UTF_8));

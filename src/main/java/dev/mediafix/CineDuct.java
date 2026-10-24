@@ -28,16 +28,16 @@ import net.neoforged.neoforge.event.server.ServerStoppedEvent;
  *
  * <p>职责划分很干净：
  * <ul>
- *   <li><b>服务端</b>：屏幕实体（{@code mediafix:screen}）与它的权威状态（放什么、从哪一刻开始、
+ *   <li><b>服务端</b>：屏幕实体（{@code cineduct:screen}）与它的权威状态（放什么、从哪一刻开始、
  *       暂停/音量/距离范围），以及 {@code /cineduct screen} 指令与 {@code dev.mediafix.api} 门面。
  *       服务端不碰解码，也不懂 B 站协议。</li>
  *   <li><b>客户端</b>：解析直链、播放、渲染到屏幕实体上、按服务端锚点对齐进度。
  *       播放链路有两条，按可用性自动选择：
  *       <ol>
- *         <li><b>零拷贝（目标形态）</b>：画面与声音由独立 C++ 子进程产出，经 DXGI 共享纹理 +
- *             {@code WGL_NV_DX_interop2} 进到游戏的 OpenGL 纹理（P1 打样已验证，见 native/README.md）；</li>
- *         <li><b>兜底（当前唯一实装）</b>：进程内自研 FFmpeg 引擎（{@code dev.mediafix.engine}）。
- *             子进程不可用、驱动不支持互操作时走这条，保证任何机器上都有画面。</li>
+ *         <li><b>零拷贝</b>：画面与声音由独立 C++ 子进程产出，经 DXGI 共享纹理 +
+ *             {@code WGL_NV_DX_interop2} 进到游戏的 OpenGL 纹理（`/cineduct subprocess on` 开启，见 native/README.md）；</li>
+ *         <li><b>兜底（默认）</b>：进程内自研 FFmpeg 引擎（{@code dev.mediafix.engine}）。
+ *             子进程没开、不可用、驱动不支持互操作时走这条，保证任何机器上都有画面。</li>
  *       </ol>
  *       两条路径共用 {@code dev.mediafix.player.MediaSession}，上层屏幕/指令/API 不感知差别。</li>
  * </ul>
@@ -790,7 +790,8 @@ public final class CineDuct {
                 + (h.sessionUuidFromRing().isEmpty() ? "（状态环里没有身份：子进程是旧版）" : ""));
         sendSuccess(source, "[CineDuct]   解码路径=" + h.decodeModeName()
                 + "  缓冲位=" + (h.buffering() ? "1(暂无新帧)" : "0")
-                + "  发布=" + h.publishedFrames() + " 帧  丢弃=" + h.droppedFrames());
+                + "  发布=" + h.publishedFrames() + " 帧  丢弃=" + h.droppedFrames()
+                + "  缓冲=" + h.bufferSummary());
         sendSuccess(source, "[CineDuct]   音频: 水位 " + h.audioQueuedMs() + "ms  欠载 "
                 + h.audioUnderruns() + " 次"
                 + (h.audioStalled() ? "  ⚠ 时钟已改走挂钟" : "")
@@ -888,6 +889,19 @@ public final class CineDuct {
                     + "  迟到丢帧=" + h.droppedLateFrames()
                     + "  定位自愈=" + h.seekHealCount() + " 次"
                     + "  音画自愈=" + h.clockHealCount() + " 次");
+            /*
+             * v11：缓冲水位与"等缓存"。
+             *
+             * 这一行回答的是"卡的时候，到底还有多少存货、我们有没有主动停下来等"：
+             *   * 水位 = 网络侧还没解码的秒数 + 已解码没呈现的秒数（目标默认 4 秒）；
+             *   * 等缓存中 = 子进程已冻住时钟与声卡（位置不会往前跑）；
+             *   * 消费者停 = 游戏进程多久没来取帧（这才是"客户端卡顿"的客观读数）。
+             */
+            sendSuccess(source, "[CineDuct]   缓冲: " + h.bufferSummary()
+                    + (h.gateActive() ? "  ⏸ 等缓存中" : "")
+                    + (h.gateCount() > 0
+                            ? "  累计等缓存 " + h.gateCount() + " 次 / " + h.gateTotalMs() + "ms"
+                            : ""));
             // v8：音频健康 —— 子进程模式下音频整条链都在子进程里，这是唯一能看到它的地方
             sendSuccess(source, "[CineDuct]   音频: 水位 " + h.audioQueuedMs() + "ms"
                     + "  欠载 " + h.audioUnderruns() + " 次"

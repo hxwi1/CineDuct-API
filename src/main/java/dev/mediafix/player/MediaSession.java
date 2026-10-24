@@ -204,6 +204,15 @@ public final class MediaSession implements AutoCloseable {
     private long lastClockHealCount;
     /** 音画偏移日志限流（每 5 秒最多一行）。 */
     private long lastAvOffsetLogAt;
+    /*
+     * v11：子进程"等缓存"（闸门）的上一次取值。
+     *
+     * 为什么要在这里记事件而不是每帧打：闸门一次进出就是一对日志，
+     * 玩家看日志时"卡了一下"与"等缓存 N 毫秒"能直接对上；
+     * 每帧打的话就淹没在噪声里了（而且状态环是每帧更新的）。
+     */
+    private long lastGateCount;
+    private boolean lastGateActive;
 
     /*
      * ★ 子进程"推迟启动"。
@@ -508,6 +517,28 @@ public final class MediaSession implements AutoCloseable {
      * 这三件事以前只能翻 `[host#…]` 原始日志，现在在模组日志里就能一眼看到。
      */
     private void reportHostDiagnostics(HostSession h) {
+        /*
+         * v11：等缓存（闸门）事件。
+         *
+         * <p>这三行是"客户端卡顿时等缓存"这条机制**唯一的外部证据**：
+         * 有"进入等缓存"就说明闸门真的触发了；只有"起播预缓冲完成"而没有进出，
+         * 说明这次卡顿是靠水位兜住的，不是靠闸门。老 exe 不写这些字段 → gateActive 恒 false，
+         * 一行业务日志都不会多出来（不会误导）。
+         */
+        final boolean gateNow = h.gateActive();
+        final long gateCount = h.gateCount();
+        if (gateNow && !this.lastGateActive) {
+            CineDuct.LOGGER.info("[CineDuct] 会话 #{} 子进程进入**等缓存**（第 {} 次）：{}"
+                            + "；位置暂停前进，恢复后从同一位置继续",
+                    this.id, gateCount, h.bufferSummary());
+        } else if (!gateNow && this.lastGateActive) {
+            final long total = h.gateTotalMs();
+            CineDuct.LOGGER.info("[CineDuct] 会话 #{} 等缓存结束（累计冻住 {}ms / {} 次）",
+                    this.id, total, gateCount);
+        }
+        if (gateCount > this.lastGateCount) this.lastGateCount = gateCount;
+        this.lastGateActive = gateNow;
+
         final int mode = h.decodeModeId();
         if (mode != this.lastDecodeModeId) {
             final int previous = this.lastDecodeModeId;
@@ -991,6 +1022,19 @@ public final class MediaSession implements AutoCloseable {
             return;
         }
         /*
+         * ★ 子进程正在"等缓存"（v11 的 gateActive）时，发布帧数**本来就不该涨**。
+         *
+         * <p>闸门是子进程**主动**把时钟与声卡冻住（等数据 / 等游戏进程来取帧），
+         * 位置停在原地、一帧都不发 —— 这是正常状态，不是卡死。
+         * 以前没有这一条时，靠子进程自己 6 秒的硬上限绕开 8 秒的重启判据；
+         * 现在有了它，把上限放宽也不会误重启（两边都留着，属于双保险）。
+         */
+        if (h.gateActive()) {
+            this.lastProgressAt = now;
+            this.lastPublishedFrames = h.publishedFrames();
+            return;
+        }
+        /*
          * seek 之后的宽限：定位期间本来就不会有新帧，但**只宽限一小段** ——
          * 无限宽限会让"seek 触发的死锁"永远不被发现（这正是这次踩到的坑）。
          */
@@ -1265,6 +1309,23 @@ public final class MediaSession implements AutoCloseable {
         if (this.mode == Mode.HOST && h != null) return h.isReady();
         final MediaEngine e = this.engine;
         return e != null && e.readyForDisplay();
+    }
+
+    /**
+     * 子进程是否正在**主动"等缓存"**（时钟与声卡已冻住，位置不再前进）。
+     *
+     * <p>为什么要单独暴露它、而不是复用 {@code state() == BUFFERING}：
+     * <ul>
+     *   <li>{@code state()} 那条路有 400ms 迟滞（防抖），而上层"要不要去追服务端进度"
+     *       需要**立刻**知道 —— 晚 400ms 就可能已经发出一次 seek 了；</li>
+     *   <li>语义也不同：BUFFERING 是"现在没有新帧"（等时钟也会翻），这条是"我们**决定**停下等"。</li>
+     * </ul>
+     *
+     * <p>Java 引擎（进程内那条路）没有这个概念 → 恒 false。
+     */
+    public boolean hostWaitingForBuffer() {
+        final HostSession h = this.host;
+        return this.mode == Mode.HOST && h != null && h.isReady() && h.gateActive();
     }
 
     public boolean hasVideo() {
@@ -1543,8 +1604,15 @@ public final class MediaSession implements AutoCloseable {
         if (prev == now) return;
         this.lastReportedState = now;
         if (prev == null) return;   // 首次只是初始化，别多打一行噪声
-        CineDuct.LOGGER.info("[CineDuct][状态] {} -> {} (子进程) | 已发布={} 帧 丢弃={} 缓冲位={}",
-                prev, now, h.publishedFrames(), h.droppedFrames(), h.buffering() ? 1 : 0);
+        /*
+         * v11：把缓冲水位一起打出来。
+         *
+         * <p>"卡了一下"到底是因为网络没供上（水位低）还是游戏没来取帧（消费者停），
+         * 这两件事以前只能翻子进程日志；现在一行 Java 日志就够。
+         * 老 exe 会打"水位=未知"，不会误导。
+         */
+        CineDuct.LOGGER.info("[CineDuct][状态] {} -> {} (子进程) | 已发布={} 帧 丢弃={} {}",
+                prev, now, h.publishedFrames(), h.droppedFrames(), h.bufferSummary());
     }
 
     public PlaybackStatus status() {

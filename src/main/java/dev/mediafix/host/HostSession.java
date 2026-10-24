@@ -98,6 +98,21 @@ public final class HostSession implements AutoCloseable {
     private static final int OFF_AUDIO_READ_ERRORS = 728;
     private static final int OFF_AUDIO_RECONNECTS = 732;
     private static final int OFF_AUDIO_REPAIRS = 736;
+    /*
+     * v11 追加：缓冲水位与"等缓存"状态（见 docs/PLAN-preload-buffer.md）。
+     *
+     * 老 exe 不写这些偏移 → 读到 0，语义上等价于"没在等缓存、水位未知"，
+     * 所以**不需要按版本号分支**（与 v8/v10 的约定一致）。
+     */
+    private static final int OFF_PACKET_BUFFER_MS = 744;
+    private static final int OFF_FRAME_BUFFER_MS = 748;
+    private static final int OFF_BUFFER_LEVEL_MS = 752;
+    private static final int OFF_BUFFER_TARGET_MS = 756;
+    private static final int OFF_GATE_ACTIVE = 760;
+    private static final int OFF_GATE_COUNT = 764;
+    private static final int OFF_CONSUMER_STALL_MS = 768;
+    private static final int OFF_PREROLL_MS = 772;
+    private static final int OFF_GATE_TOTAL_MS = 776;
     private static final int MAGIC = 0x4D465850;      // "MFXP"
     private static final int SLOT_READY = 2;
     private static final int SLOT_SHOWN = 3;
@@ -318,10 +333,25 @@ public final class HostSession implements AutoCloseable {
         if (FfmpegConfig.avOffsetMs != 0) {
             cmd.add("--av-offset-ms");
             cmd.add(String.valueOf(FfmpegConfig.avOffsetMs));
-        }        cmd.add("--status");
+        }
+        cmd.add("--status");
         cmd.add(statusName);
         cmd.add("--slots");
         cmd.add(String.valueOf(FfmpegConfig.hostSlots));
+        /*
+         * 缓冲与"等缓存"（v11，见 docs/PLAN-preload-buffer.md）。
+         *
+         * 三个数只在**非默认值**时才传吗？不 —— 一律传：玩家在 cineduct-ffmpeg.json 里
+         * 改了数就要生效，而"传的就是配置里的数"比"猜哪些算默认"稳得多。
+         * 总开关关掉时用 --no-buffer-gate，子进程那边两条判据一起停。
+         */
+        cmd.add("--buffer-target-ms");
+        cmd.add(String.valueOf(Math.max(0, FfmpegConfig.bufferTargetMs)));
+        cmd.add("--preroll-ms");
+        cmd.add(String.valueOf(Math.max(0, FfmpegConfig.prerollMs)));
+        cmd.add("--stall-gate-ms");
+        cmd.add(String.valueOf(Math.max(0, FfmpegConfig.stallGateMs)));
+        if (!FfmpegConfig.bufferGate) cmd.add("--no-buffer-gate");
         cmd.add("--pipe");
         cmd.add(pipeName);
         if (loop) cmd.add("--loop");
@@ -833,6 +863,90 @@ public final class HostSession implements AutoCloseable {
     /** 是否正在"缓冲中/等数据"（呈现侧没有新帧可出）。 */
     public boolean buffering() {
         return this.status != null && this.status.getInt(OFF_BUFFERING) != 0;
+    }
+
+    // =====================================================================
+    // v11：缓冲水位与"等缓存"
+    // =====================================================================
+
+    /**
+     * 包队列里首尾 PTS 的跨度（毫秒）= **网络侧还有多少秒的数据没解码**。
+     *
+     * <p>这是"提前缓存了几秒"的真实读数。老 exe 返回 0（没有这个字段），
+     * 所以判读时别把 0 当成"缓冲见底"—— 用 {@link #bufferLevelKnown()} 先问一句。
+     */
+    public int packetBufferMs() {
+        return this.status == null ? 0 : this.status.getInt(OFF_PACKET_BUFFER_MS);
+    }
+
+    /** 已解码、还没呈现的帧折算成的时长（毫秒，帧队列只有 3 帧，量级几十毫秒）。 */
+    public int frameBufferMs() {
+        return this.status == null ? 0 : this.status.getInt(OFF_FRAME_BUFFER_MS);
+    }
+
+    /** 总水位 = 包队列 + 帧队列（毫秒）。 */
+    public int bufferLevelMs() {
+        return this.status == null ? 0 : this.status.getInt(OFF_BUFFER_LEVEL_MS);
+    }
+
+    /** 当前生效的目标水位（毫秒）；0 = 老 exe（没这个概念）。 */
+    public int bufferTargetMs() {
+        return this.status == null ? 0 : this.status.getInt(OFF_BUFFER_TARGET_MS);
+    }
+
+    /**
+     * 老 exe 与新 exe 的分界：新 exe 会写非 0 的目标水位。
+     *
+     * <p>用它把"水位 0（真的空了）"和"水位 0（这版根本没有这个字段）"分开 ——
+     * 不分开的话，老 exe 会被上层误判成"一直在缓冲见底"。
+     */
+    public boolean bufferLevelKnown() {
+        return bufferTargetMs() > 0;
+    }
+
+    /**
+     * **是否正在"等缓存"**：子进程已把时钟与声卡冻住，位置不再前进。
+     *
+     * <p>与 {@link #buffering()} 的区别：`buffering` 是"此刻没有新帧可出"（正常播放里
+     * 为等时钟也会翻一下），`gateActive` 是"我们**主动**停下等数据/等客户端取帧"。
+     * 判断"这次卡顿有没有被兜住"要看这一个。
+     */
+    public boolean gateActive() {
+        return this.status != null && this.status.getInt(OFF_GATE_ACTIVE) != 0;
+    }
+
+    /** 累计进入"等缓存"的次数。 */
+    public long gateCount() {
+        return this.status == null ? 0L : this.status.getInt(OFF_GATE_COUNT) & 0xFFFFFFFFL;
+    }
+
+    /** 消费者（游戏进程）连续多久没取帧（毫秒，0 = 正常）。 */
+    public int consumerStallMs() {
+        return this.status == null ? 0 : this.status.getInt(OFF_CONSUMER_STALL_MS);
+    }
+
+    /** 起播预缓冲实际等了多久（毫秒，0 = 没等）。 */
+    public int prerollWaitedMs() {
+        return this.status == null ? 0 : this.status.getInt(OFF_PREROLL_MS);
+    }
+
+    /** 累计被"等缓存"冻住的时长（毫秒）。 */
+    public long gateTotalMs() {
+        return this.status == null ? 0L : this.status.getLong(OFF_GATE_TOTAL_MS);
+    }
+
+    /** 一行缓冲水位摘要（诊断/状态面板用）。 */
+    public String bufferSummary() {
+        if (!bufferLevelKnown()) return "水位=未知（旧版子进程）";
+        return "水位=" + bufferLevelMs() + "/" + bufferTargetMs() + "ms"
+                + "（网络 " + packetBufferMs() + " + 已解码 " + frameBufferMs() + "）"
+                + (gateActive() ? " 等缓存中" : "")
+                + (consumedStallText());
+    }
+
+    private String consumedStallText() {
+        final int stall = consumerStallMs();
+        return stall > 0 ? " 消费者停 " + stall + "ms" : "";
     }
 
     /**
