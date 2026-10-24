@@ -129,6 +129,17 @@ public final class CinePlayPlugin extends JavaPlugin {
         return getConfig().getBoolean("requireChannel", false);
     }
 
+    /**
+     * 需要大会员的付费内容，非大会员能试看的秒数（B 站通常 6 分钟 = 360）。
+     *
+     * <p>为什么要有这个数：服务端**无从知道**每个客户端是不是大会员（各人账号的事），
+     * 而试看到的画面会在试看结束时停住。默认按试看时长截断，避免"画面停了服务端还在等"。
+     * 设成 0 = 不截断（一律按总时长，适合全服都是大会员的情况）。
+     */
+    int premiumPreviewSeconds() {
+        return Math.max(0, getConfig().getInt("premiumPreviewSeconds", 360));
+    }
+
     long playCooldownMs() {
         return Math.max(0L, getConfig().getLong("playCooldownMs", 1500L));
     }

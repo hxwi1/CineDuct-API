@@ -351,10 +351,25 @@ final class CinePlayCommands {
          */
         if (screen.durations.size() > index ? screen.durations.get(index) <= 0 : true) {
             Messages.note(sender, "正在查询时长…（查到才会自动推进下一条）");
-            this.plugin.durations().fetch(url, (u, seconds) -> {
+            this.plugin.durations().fetch(url, (u, info) -> {
+                int seconds = info.seconds();
+                /*
+                 * 需要大会员的内容，非大会员账号只能**试看**（B 站通常 6 分钟）。
+                 * 服务端没法知道每个客户端是不是大会员（那是各人账号的事），所以默认按试看时长截断 ——
+                 * 宁可早一点切下一条，也不要"画面早就停了、服务端还以为在播"。
+                 * 大会员观众想按完整时长走，就用 /cineplay add <屏幕> <链接> <秒> 手填。
+                 */
+                final int preview = this.plugin.premiumPreviewSeconds();
+                if (info.premium() && preview > 0 && seconds > preview) {
+                    this.plugin.getLogger().warning("需要大会员的付费内容：" + Screens.safeUrl(u)
+                            + " 总时长 " + seconds + "s，非大会员只能试看 → 按 " + preview + "s 处理"
+                            + "（大会员观众请手填完整秒数覆盖）");
+                    seconds = preview;
+                }
                 if (!this.plugin.screens().setDuration(screen.name, index, seconds)) return;
-                this.plugin.getLogger().info("时长已查到：" + Screens.safeUrl(u) + " = " + seconds + "s（"
-                        + screen.name + " 第 " + (index + 1) + " 项）");
+                this.plugin.getLogger().info("时长已就绪：" + Screens.safeUrl(u) + " = " + seconds + "s（"
+                        + screen.name + " 第 " + (index + 1) + " 项"
+                        + (info.premium() ? "，付费内容" : "") + "）");
             });
         }
         return 1;

@@ -44,8 +44,18 @@ final class DurationLookup {
     private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             + "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-    /** url → 秒数（0 = 查过但没有，别再查）。 */
-    private static final ConcurrentHashMap<String, Integer> CACHE = new ConcurrentHashMap<>();
+    /** url → 查询结果（0 秒 = 查过但没拿到，别再查）。 */
+    private static final ConcurrentHashMap<String, Info> CACHE = new ConcurrentHashMap<>();
+
+    /**
+     * 查询结果。
+     *
+     * @param seconds 内容总时长（秒）；0 = 未知
+     * @param premium 是否需要大会员（付费/充电专属）。**很重要**：非大会员只能试看，
+     *                实际可播时长远小于总时长，所以调用方要按 {@code premiumPreviewSeconds} 截断
+     */
+    record Info(int seconds, boolean premium) {
+    }
 
     private final JavaPlugin plugin;
     private final HttpClient http = HttpClient.newBuilder()
@@ -62,28 +72,28 @@ final class DurationLookup {
      *
      * <p>缓存命中时**同步**回调（同一个 tick 内就能拿到），避免"第一次慢、后面快"的行为差异。
      */
-    void fetch(String url, BiConsumer<String, Integer> onMain) {
+    void fetch(String url, BiConsumer<String, Info> onMain) {
         if (url == null || url.isBlank()) return;
-        final Integer cached = CACHE.get(url);
+        final Info cached = CACHE.get(url);
         if (cached != null) {
-            if (cached > 0) onMain.accept(url, cached);
+            if (cached.seconds() > 0) onMain.accept(url, cached);
             return;
         }
         this.plugin.getServer().getScheduler().runTaskAsynchronously(this.plugin, () -> {
-            final int seconds = query(url);
-            if (seconds > 0) CACHE.put(url, seconds);
-            if (seconds <= 0) {
+            final Info info = query(url);
+            if (info != null && info.seconds() > 0) CACHE.put(url, info);
+            if (info == null || info.seconds() <= 0) {
                 this.plugin.getLogger().info("查不到时长（不自动推进）：" + Screens.safeUrl(url));
                 return;
             }
-            this.plugin.getServer().getScheduler().runTask(this.plugin, () -> onMain.accept(url, seconds));
+            this.plugin.getServer().getScheduler().runTask(this.plugin, () -> onMain.accept(url, info));
         });
     }
 
     // =====================================================================
 
-    /** 同步查询（只在异步线程调用）。返回 0 = 未知。 */
-    private int query(String url) {
+    /** 同步查询（只在异步线程调用）。返回 null = 未知。 */
+    private Info query(String url) {
         try {
             final String bv = group(BV, url);
             if (bv != null) return videoDuration("https://api.bilibili.com/x/web-interface/view?bvid=" + bv);
@@ -94,32 +104,43 @@ final class DurationLookup {
         } catch (Exception e) {
             this.plugin.getLogger().fine("查时长失败: " + e.getMessage());
         }
-        return 0;
+        return null;
     }
 
-    /** 普通投稿：{@code data.duration} 就是秒。 */
-    private int videoDuration(String api) throws Exception {
+    /** 普通投稿：{@code data.duration} 就是秒；{@code rights.pay} / {@code is_upower_exclusive} 表示付费内容。 */
+    private Info videoDuration(String api) throws Exception {
         final JsonObject root = getJson(api);
-        if (root == null) return 0;
-        if (root.has("code") && root.get("code").getAsInt() != 0) return 0;
-        if (!(root.get("data") instanceof JsonObject data)) return 0;
-        return data.has("duration") ? Math.max(0, data.get("duration").getAsInt()) : 0;
+        if (root == null) return null;
+        if (root.has("code") && root.get("code").getAsInt() != 0) return null;
+        if (!(root.get("data") instanceof JsonObject data)) return null;
+        final int seconds = data.has("duration") ? Math.max(0, data.get("duration").getAsInt()) : 0;
+        if (seconds <= 0) return null;
+        boolean premium = data.has("is_upower_exclusive") && data.get("is_upower_exclusive").getAsBoolean();
+        if (data.get("rights") instanceof JsonObject rights && rights.has("pay")) {
+            premium = premium || rights.get("pay").getAsInt() != 0;
+        }
+        return new Info(seconds, premium);
     }
 
     /** 番剧：在 {@code result.episodes[]} 里找 {@code id == ep_id}，它的 duration 是**毫秒**。 */
-    private int bangumiDuration(String epId) throws Exception {
+    private Info bangumiDuration(String epId) throws Exception {
         final JsonObject root = getJson("https://api.bilibili.com/pgc/view/web/season?ep_id=" + epId);
-        if (root == null) return 0;
-        if (!(root.get("result") instanceof JsonObject result)) return 0;
-        if (!(result.get("episodes") instanceof JsonArray episodes)) return 0;
+        if (root == null) return null;
+        if (!(root.get("result") instanceof JsonObject result)) return null;
+        // 整季的付费标记：payment 非 0 = 需要大会员/付费
+        boolean seasonPremium = result.has("payment") && result.get("payment").getAsInt() != 0;
+        if (!(result.get("episodes") instanceof JsonArray episodes)) return null;
         for (JsonElement e : episodes) {
             if (!(e instanceof JsonObject ep)) continue;
             if (!ep.has("id") || !String.valueOf(ep.get("id").getAsInt()).equals(epId)) continue;
-            if (!ep.has("duration")) return 0;
-            return Math.max(0, ep.get("duration").getAsLong() / 1000L > Integer.MAX_VALUE
-                    ? Integer.MAX_VALUE : (int) (ep.get("duration").getAsLong() / 1000L));
+            if (!ep.has("duration")) return null;
+            final long ms = ep.get("duration").getAsLong();
+            final int seconds = ms <= 0 ? 0 : (int) Math.min(Integer.MAX_VALUE, ms / 1000L);
+            if (seconds <= 0) return null;
+            boolean premium = seasonPremium || (ep.has("pay") && ep.get("pay").getAsInt() != 0);
+            return new Info(seconds, premium);
         }
-        return 0;
+        return null;
     }
 
     private JsonObject getJson(String api) throws Exception {
@@ -141,12 +162,12 @@ final class DurationLookup {
         return m.find() ? m.group(1) : null;
     }
 
-    /** 手动覆盖（`/cineplay duration <屏幕> <秒>` 用）。 */
+    /** 手动覆盖（手填秒数时记一下，避免下次又去查）。 */
     static void remember(String url, int seconds) {
-        if (url != null && seconds > 0) CACHE.put(url, seconds);
+        if (url != null && seconds > 0) CACHE.put(url, new Info(seconds, false));
     }
 
-    static Optional<Integer> cached(String url) {
-        return Optional.ofNullable(CACHE.get(url)).filter(v -> v > 0);
+    static Optional<Info> cached(String url) {
+        return Optional.ofNullable(CACHE.get(url)).filter(v -> v.seconds() > 0);
     }
 }
