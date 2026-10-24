@@ -55,6 +55,8 @@ final class Screens {
         long anchorWallMs;
         boolean paused;
         boolean live;
+        /** 队列已经播完并被清空（只用于显示，不参与播放逻辑）。 */
+        boolean finished;
 
         Screen(String name) {
             this.name = name;
@@ -169,6 +171,7 @@ final class Screens {
             screen.positionMs = s.getLong("positionMs", 0L);
             screen.paused = s.getBoolean("paused", false);
             screen.live = s.getBoolean("live", false);
+            screen.finished = s.getBoolean("finished", false);
             /*
              * 锚点时刻用"现在"：存档里存的是关服那一刻的位置，重启后应当从那里继续走，
              * 而不是把停机这段时间也算成"播过去了"。
@@ -221,6 +224,7 @@ final class Screens {
             yaml.set(path + ".positionMs", screen.currentPositionMs());
             yaml.set(path + ".paused", screen.paused);
             yaml.set(path + ".live", screen.live);
+            yaml.set(path + ".finished", screen.finished);
             if (screen.origin1 != null && screen.origin2 != null) {
                 yaml.set(path + ".origin1", List.of(screen.origin1.getX(), screen.origin1.getY(), screen.origin1.getZ()));
                 yaml.set(path + ".origin2", List.of(screen.origin2.getX(), screen.origin2.getY(), screen.origin2.getZ()));
@@ -307,9 +311,34 @@ final class Screens {
             if (duration <= 0 || screen.playlist.size() < 2 || screen.paused) continue;
             if (screen.currentPositionMs() < duration * 1000L) continue;
             screen.reanchor();
+            final boolean last = screen.index >= screen.playlist.size() - 1;
+            if (last && !this.plugin.playlistLoop()) {
+                /*
+                 * 播完最后一项就**清空队列**，而不是原地索引归零继续"看起来在播"。
+                 *
+                 * <p>为什么必须清：留着状态的话，服务端永远显示"第 1 项 00:00"，
+                 * 操作者无法分辨"客户端还在放"和"早就放完了、服务端自己在空转"。
+                 * 清空之后 /cineplay playlist 是空的、status 显示播完，这就是明确的完成信号。
+                 *
+                 * <p>客户端那边不用发指令：播放器自己到 EOF 就停了。
+                 */
+                screen.playlist.clear();
+                screen.durations.clear();
+                screen.index = 0;
+                screen.positionMs = 0L;
+                screen.anchorWallMs = System.currentTimeMillis();
+                screen.paused = false;
+                screen.finished = true;
+                save();
+                this.plugin.broadcastClose(screen.name);
+                this.plugin.getLogger().info("播放列表已清空：" + screen.name + " 全部播完（最后一项 "
+                        + duration + "s）→ 需要重播请重新 /cineplay add");
+                continue;
+            }
             screen.nextUrl();
             screen.positionMs = 0L;
             screen.anchorWallMs = System.currentTimeMillis();
+            screen.finished = false;
             save();
             broadcastAnchor(screen);
             this.plugin.getLogger().info("播放列表推进 → " + screen.name

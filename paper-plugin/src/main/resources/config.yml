@@ -16,6 +16,12 @@ defaultSlot: main
 # 0 = 不截断（全服都是大会员时可用）。单个视频想按完整时长走，用 /cineplay add <屏幕> <链接> <秒> 手填。
 premiumPreviewSeconds: 360
 
+# 播完最后一项之后是否回到开头循环。
+# false（默认）= 清空队列：/cineplay playlist 变空、/cineplay status 显示"播完"，
+#   这样你能一眼看出"服务端和客户端都结束了"，而不是看着服务端在原地空转。
+# true = 一直循环（适合展台/循环播放的场合）。
+playlistLoop: false
+
 # /cineplay play 的最小间隔（毫秒）：防止手滑连点把客户端刷成反复重开。
 # 0 = 不限制。
 playCooldownMs: 1500

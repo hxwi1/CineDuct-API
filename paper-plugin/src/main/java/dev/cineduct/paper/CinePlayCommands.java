@@ -516,6 +516,7 @@ final class CinePlayCommands {
                     + (screen.playlist.isEmpty() ? "（空）" : "  " + mmss(screen.currentPositionMs())
                             + (screen.currentDurationSec() > 0
                                     ? "/" + mmss(screen.currentDurationSec() * 1000L) : "/?"))
+                    + (screen.finished ? "  播完（队列已清空）" : "")
                     + (screen.paused ? "  暂停" : "")
                     + (url.isEmpty() ? "" : "  " + Screens.safeUrl(url)));
         }

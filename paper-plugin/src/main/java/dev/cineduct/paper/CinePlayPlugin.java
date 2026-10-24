@@ -176,6 +176,11 @@ public final class CinePlayPlugin extends JavaPlugin {
         return Math.max(0, getConfig().getInt("premiumPreviewSeconds", 360));
     }
 
+    /** 播完最后一项后是否回到开头继续循环（默认 false：清空队列，让"播完"这件事看得见）。 */
+    boolean playlistLoop() {
+        return getConfig().getBoolean("playlistLoop", false);
+    }
+
     long playCooldownMs() {
         return Math.max(0L, getConfig().getLong("playCooldownMs", 1500L));
     }
