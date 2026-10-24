@@ -1,0 +1,49 @@
+// Paper 侧参考插件：用服务端指令控制装了 CineDuct 模组的客户端播放。
+//
+// 与模组**完全解耦**：只依赖 Paper API + Bukkit 的插件消息，不需要模组的任何 jar。
+// 协议定义在仓库根目录 docs/paper-control-payload.md。
+//
+// 构建：.\gradlew.bat -p paper-plugin build      （产物 paper-plugin/build/libs/cineplay-<版本>.jar）
+
+plugins {
+    id 'java'
+}
+
+group = 'dev.cineduct'
+// 与模组同一套日期式版本号：<MMdd>-build-<通道>
+version = '1025-build-alpha'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    // Paper 的 API 只在这里有
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+    // 国内镜像放前面，避免中央仓库慢/超时
+    maven { url = 'https://maven.aliyun.com/repository/public' }
+    mavenCentral()
+}
+
+dependencies {
+    // 只编译期需要：运行期由 Paper 服务端提供
+    compileOnly 'io.papermc.paper:paper-api:1.21.1-R0.1-SNAPSHOT'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+// 只对 plugin.yml 做变量替换；config.yml 里可能有 `$` 注释，别一起卷进去
+processResources {
+    filesMatching('plugin.yml') {
+        expand(version: project.version)
+    }
+}
+
+jar {
+    archiveFileName = "cineplay-${project.version}.jar"
+}

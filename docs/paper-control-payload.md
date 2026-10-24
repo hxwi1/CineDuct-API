@@ -1,6 +1,6 @@
 # 服务端（Paper 插件）控制客户端播放：自定义网络包契约
 
-> 状态：**P0（客户端协议层）已实现**；P1 Paper 插件未开工，计划见 §9。
+> 状态：**P0（客户端协议层）与 P1（Paper 参考插件）已实现**；P2 显示目标与 P3 同步播放未做，见 §9。
 > 目标场景：**服务端是 Paper**，用插件直接控制装了本模组的客户端播放。
 
 ---
@@ -181,17 +181,20 @@
 生命周期：客户端监听 `ClientPlayerNetworkEvent.LoggingOut` → 关闭**全部服务端 slot**（§7）。
 玩家自己（指令/附属 mod）开的播放器不受影响。
 
-### P1 Paper 参考插件（新目录 `paper-plugin/`）
+### P1 Paper 参考插件（新目录 `paper-plugin/`）—— ✅ 已实现
 
-Java 21 + `paper-api:1.21.1-R0.1-SNAPSHOT`，独立 gradle 项目，产物 `cineplay-<ver>.jar`，
-**不进本模组产物**（§9 原文约定：作为参考实现 + 文档）。
+Java 21 + `paper-api:1.21.1-R0.1-SNAPSHOT`，独立 gradle 项目（`.\gradlew.bat -p paper-plugin build`），
+产物 `cineplay-<版本>.jar`，**不进本模组产物**。用法与客户端闸门配置见 `paper-plugin/README.md`。
 
 | 内容 | 说明 |
 | --- | --- |
-| 指令 | `/cineplay play <url> [slot]`、`pause`、`resume`、`stop`、`seek <秒>`、`volume <0-100>`、`status`；权限 `cineplay.admin`（默认 OP） |
-| 发送 | `player.sendPluginMessage(plugin, "cineduct:control", bytes)`；发送前查 `player.getListeningPluginChannels()`，没装模组就跳过并提示（不刷错误） |
-| 配置 | `config.yml`：`token`、`defaultSlot`、`maxSlots` |
-| 上行 | `Messenger` 注册 `cineduct:state` 入站 → 写日志 + `/cineplay status` 显示位置/状态 |
+| 指令 | `/cineplay play <url> [slot]`、`broadcast`、`pause`、`resume`、`stop`、`seek <秒>`、`volume <0-100>`、`aspect <比例>`、`rebuild`、`list`、`status [玩家]`；权限 `cineplay.admin`（默认 OP） |
+| 发送 | `player.sendPluginMessage(this, "cineduct:control", bytes)`；JSON 自己拼（无 Gson 依赖），转义按 RFC 8259 |
+| 配置 | `config.yml`：`token`、`defaultSlot`、`logState`、`requireChannel`（默认 false） |
+| 上行 | `Messenger` 注册 `cineduct:state` 入站 → 每个玩家存最近一条，`/cineplay status` 显示 |
+
+`requireChannel` 默认 **false** 是刻意留的：NeoForge 客户端是否通过 Bukkit 的 register 机制通告通道，
+各版本行为不一致，拿它当硬门禁会出现"客户端明明装了却发不出去"；发给没人监听的通道对原版客户端无副作用。
 
 验收：本地 Paper 1.21.1 起服 → 装插件 → 客户端装模组 → 指令控制；**没装模组的玩家收到指令不报错**，
 `status` 里明确显示"该玩家客户端没有 cineduct:control 通道"。

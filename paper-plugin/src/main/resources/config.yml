@@ -1,0 +1,20 @@
+# CinePlay —— 服务端指令控制装了 CineDuct 模组的客户端播放
+#
+# 注意：客户端的闸门是默认关闭的（<游戏目录>/cineduct-packet.json 里 enabled=false）。
+# 插件这边配置对了、客户端没开，服务端发出去的包会被客户端直接拒掉并记一行日志。
+
+# 共享令牌：与客户端 cineduct-packet.json 里的 token 一致；两边都留空 = 不校验。
+token: ""
+
+# 指令不带 slot 参数时用哪个槽位（客户端用它做"slot → 播放器"的映射名）。
+defaultSlot: main
+
+# 把客户端回执（cineduct:state）写进服务器日志。排查时开，稳定运行可以关。
+logState: true
+
+# 是否要求客户端先通告监听 cineduct:control 才发。
+#
+# 默认 false：NeoForge 客户端是否通过 Bukkit 的 register 机制通告通道，各版本行为不完全一致，
+# 拿它当硬门禁会出现"客户端明明装了就发不出去"。发送一个没人监听的通道对原版客户端无副作用
+# （服务端只会在日志里看到一条 ignored 警告），所以这里默认"发就完事"。
+requireChannel: false
