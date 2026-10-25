@@ -1,5 +1,8 @@
 # CineDuct 插件协议（线上格式）
 
+> 插件已独立成仓（`video-paper-plugin`，MIT）。本文件与那边的 `PROTOCOL.md` 是同一份内容；
+> 改动协议请**两边一起改**，否则会漂。
+
 服务端插件（Paper，`paper-plugin/`）与客户端模组（`dev.mediafix.net`）之间**唯一**的通信格式。
 这份文档只讲**线上字节长什么样**；服务端怎么算进度、权限怎么判，见 `docs/paper-control-payload.md`。
 

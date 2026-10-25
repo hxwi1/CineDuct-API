@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>CineDuct promo stage</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="stage">
+  <div class="bg-grid"></div>
+  <div class="bg-glow"></div>
+  <div class="bg-vignette"></div>
+  <div class="camera" id="camera">
+    <section class="scene" id="scene-open"></section>
+    <section class="scene" id="scene-seal"></section>
+    <section class="scene" id="scene-legacy"></section>
+    <section class="scene" id="scene-pipeline"></section>
+  </div>
+</div>
+<script src="app.js"></script>
+<script src="scenes/opening.js"></script>
+<script src="scenes/seal.js"></script>
+<script src="scenes/legacy.js"></script>
+<script src="scenes/pipeline.js"></script>
+<script>
+  window.__ready = true;
+  window.__seek(0);
+</script>
+</body>
+</html>
