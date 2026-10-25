@@ -209,7 +209,11 @@ final class CinePlayCommands {
                         })
                         .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name")))));
 
-        root.then(Commands.literal("menu").executes(ctx -> menu(ctx)));
+        root.then(Commands.literal("menu")
+                .executes(ctx -> menu(ctx))
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .suggests(this::suggestScreens)
+                        .executes(ctx -> screenMenu(ctx, StringArgumentType.getString(ctx, "screen")))));
         root.then(Commands.literal("help").executes(ctx -> help(ctx)));
 
         registrar.register(root.build(), "控制装了 CineDuct 模组的客户端播放", List.of("cp"));
@@ -685,93 +689,119 @@ final class CinePlayCommands {
         return String.format(java.util.Locale.ROOT, "%02d:%02d", total / 60, total % 60);
     }
 
+    /** 装饰线：一行等号（顶部/底部）。 */
+    private static Component rule() {
+        return Component.text("==================== ", NamedTextColor.DARK_AQUA)
+                .append(Component.text("CinePlay", NamedTextColor.AQUA))
+                .append(Component.text(" ====================", NamedTextColor.DARK_AQUA));
+    }
+
     /**
-     * {@code /cineplay menu}：聊天栏里的可点菜单。
+     * {@code /cineplay menu}：一级菜单 —— 只列「我的屏 + 附近有权限的屏」，每块屏一个 [管理]。
      *
-     * <p>每块屏一行状态 + 一排按钮：按钮全用 {@link Messages} 的点击文字，能直接跑的就跑
-     * （列表/下一条/删除/新建），需要补参数的就填进输入框（加片/音量/范围/授权）。
-     *
-     * <p>为什么用菜单而不是长帮助：这个插件的操作是"对着某块屏做一件事"，
-     * 菜单把"哪块屏 + 能做什么"放在同一行，比记 12 条指令现实得多。
+     * <p>二级（{@code /cineplay menu <屏幕>}）才是对着这块屏能做的一排操作。
+     * 分两级的理由：一级是"选哪块屏"，二级是"对这块屏做什么"，混在一起一行放七八个按钮，
+     * 聊天栏里既难读也容易点错。
      */
     private int menu(CommandContext<CommandSourceStack> ctx) {
         final CommandSender sender = ctx.getSource().getSender();
         final List<String> names = this.plugin.screens().names();
-
-        /*
-         * 只列"跟我有关"的屏：我拥有/能管的，或者在我附近的。全服几十块屏时把所有屏
-         * 平铺出来根本没法看 —— 菜单是操作面板，不是数据库。
-         */
         final Player self = sender instanceof Player p ? p : null;
         final Location eye = self == null ? null : self.getLocation();
         final int range = this.plugin.menuRange();
-        int shown = 0;
-        int hidden = 0;
-        Messages.ok(sender, "CinePlay 菜单（" + (eye == null ? names.size() + " 块屏"
-                : range + " 格内 + 你的屏") + "）");
+
+        sender.sendMessage(rule());
         if (names.isEmpty()) {
-            Messages.action(sender, "[ 新建屏幕 ]", "/cineplay create", "木锄点两个对角开始建屏");
+            Messages.ok(sender, "还没有任何屏幕");
+            sender.sendMessage(Component.text("  ")
+                    .append(Messages.actionComponent("[+ 新建屏幕]", "/cineplay create", "木锄点两个对角开始建屏")));
+            sender.sendMessage(rule());
             return 1;
         }
+
+        int hidden = 0;
         for (String name : names) {
             final Screens.Screen s = this.plugin.screens().get(name);
-            // 能管 = 我的屏（含 OP）；否则只有"够得着"的才显示
-            final boolean mine = Screens.canManage(s, self) && s.ownerId != null
-                    && self != null && s.ownerId.equals(self.getUniqueId());
-            final boolean nearby = eye != null && !s.corners.isEmpty()
-                    && eye.getWorld() != null
+            final boolean mine = self != null && s.ownerId != null && s.ownerId.equals(self.getUniqueId());
+            final boolean nearby = eye != null && !s.corners.isEmpty() && eye.getWorld() != null
                     && eye.getWorld().equals(s.corners.getFirst().getWorld())
                     && eye.distance(s.corners.getFirst()) <= range;
-            /*
-             * 附近还不够 —— 还得"你有权限"：本人拥有、或这块屏对所有人开放、或你被单独授权。
-             * 否则任何人走近别人的屏都会看到它的按钮（虽然点了会被权限拦，但菜单本身就在泄露信息）。
-             * OP 例外：canUse 里 canManage 已经包含了 OP。
-             */
-            final boolean allowed = nearby && Screens.canUse(s, self);
-            if (!mine && !allowed) {
+            if (!mine && !(nearby && Screens.canUse(s, self))) {
                 hidden++;
                 continue;
             }
-            shown++;
-            final String state = s.finished ? "播完" : (s.playlist.isEmpty() ? "空" : (s.paused ? "暂停" : "播放中"));
+            final String state = s.finished ? "播完" : (s.playlist.isEmpty() ? "空"
+                    : (s.paused ? "暂停" : "播放中"));
             final String pos = s.playlist.isEmpty() ? ""
                     : " " + mmss(s.currentPositionMs()) + (s.currentDurationSec() > 0
                             ? "/" + mmss(s.currentDurationSec() * 1000L) : "");
-            // 一块屏占两行：状态一行、按钮一行（按钮拼在同一个 Component 里，不要一个按钮一条消息）
-            sender.sendMessage(Component.text(PFX, NamedTextColor.AQUA)
+            final String tag = mine ? "" : (nearby ? "附近 " : "");
+            sender.sendMessage(Component.text(" " + tag, NamedTextColor.DARK_GRAY)
                     .append(Component.text(name, NamedTextColor.WHITE))
                     .append(Component.text("  [" + state + pos + "]", NamedTextColor.GRAY))
-                    .append(Component.text((s.ownerName == null ? "" : "  " + s.ownerName)
-                            + "  音量 " + s.volumePercent + "%  范围 " + s.enterRange + "/" + s.exitRange,
-                            NamedTextColor.DARK_GRAY)));
-            sender.sendMessage(Component.text("   ")
-                    .append(Messages.actionComponent("[列表]", "/cineplay playlist " + name, "看播放列表"))
+                    .append(Component.text(s.playlist.isEmpty() ? "  —" : "  " + s.playlist.size() + " 项",
+                            NamedTextColor.DARK_GRAY))
                     .append(SP)
-                    .append(Messages.actionComponent("[下一条]", "/cineplay next " + name, "切到下一项"))
-                    .append(SP)
-                    .append(Messages.suggestComponent("[加片]", "/cineplay add " + name + " ", "填入指令后粘链接"))
-                    .append(SP)
-                    .append(Messages.suggestComponent("[音量]", "/cineplay volume " + name + " ", "0~100"))
-                    .append(SP)
-                    .append(Messages.suggestComponent("[范围]", "/cineplay range " + name + " ", "起播格数"))
-                    .append(SP)
-                    .append(Messages.suggestComponent("[权限]", "/cineplay access " + name + " ", "public/add"))
-                    .append(SP)
-                    .append(Messages.actionComponent("[删除]", "/cineplay remove " + name, "删除这块屏")));
+                    .append(Messages.actionComponent("[管理]", "/cineplay menu " + name, "打开这块屏的操作菜单")));
         }
         if (hidden > 0) {
-            Messages.note(sender, "还有 " + hidden + " 块屏（在 " + range + " 格外，或没对你开放权限）已隐藏");
-            Messages.action(sender, "  [看全部屏幕]", "/cineplay screens", "不筛选，全列出来");
+            Messages.note(sender, "另有 " + hidden + " 块屏（" + range + " 格外，或没对你开放）已隐藏");
         }
-        sender.sendMessage(Component.text(PFX, NamedTextColor.AQUA)
-                .append(Messages.actionComponent("[新建屏幕]", "/cineplay create", "木锄点两个对角开始建屏"))
+        sender.sendMessage(Component.text("  ")
+                .append(Messages.actionComponent("[+ 新建屏幕]", "/cineplay create", "木锄点两个对角"))
                 .append(SP)
-                .append(Messages.actionComponent("[刷新菜单]", "/cineplay menu", "重新加载状态"))
+                .append(Messages.actionComponent("[刷新]", "/cineplay menu", "重新加载"))
                 .append(SP)
-                .append(Messages.actionComponent("[完整帮助]", "/cineplay help", "所有指令")));
+                .append(Messages.actionComponent("[帮助]", "/cineplay help", "所有指令")));
+        sender.sendMessage(rule());
         return 1;
     }
 
+    /** {@code /cineplay menu <屏幕>}：二级菜单 —— 对着某块屏能做的事。 */
+    private int screenMenu(CommandContext<CommandSourceStack> ctx, String name) {
+        final CommandSender sender = ctx.getSource().getSender();
+        final Player self = sender instanceof Player p ? p : null;
+        final Screens.Screen s = this.plugin.screens().get(name);
+        sender.sendMessage(rule());
+        if (s == null) {
+            Messages.error(sender, "找不到屏幕 " + name);
+            sender.sendMessage(rule());
+            return 0;
+        }
+        if (!Screens.canUse(s, self)) {
+            Messages.error(sender, "这块屏没有对你开放（找主人 " + (s.ownerName == null ? "?" : s.ownerName) + " 授权）");
+            sender.sendMessage(rule());
+            return 0;
+        }
+        final String state = s.finished ? "播完" : (s.playlist.isEmpty() ? "空" : (s.paused ? "暂停" : "播放中"));
+        sender.sendMessage(Component.text(" " + s.name, NamedTextColor.WHITE)
+                .append(Component.text("  [" + state + "]", NamedTextColor.GRAY))
+                .append(Component.text("  主人 " + (s.ownerName == null ? "无" : s.ownerName)
+                        + (s.publicAccess ? "（公开）" : ""), NamedTextColor.DARK_GRAY)));
+        sender.sendMessage(Component.text("  音量 " + s.volumePercent + "%  范围 "
+                + s.enterRange + "/" + s.exitRange + " 格  第 "
+                + (s.playlist.isEmpty() ? 0 : s.index + 1) + "/" + s.playlist.size() + " 项",
+                NamedTextColor.DARK_GRAY));
+
+        sender.sendMessage(Component.text("  ")
+                .append(Messages.actionComponent("[播放列表]", "/cineplay playlist " + name, "看这一屏的列表"))
+                .append(SP)
+                .append(Messages.actionComponent("[下一条]", "/cineplay next " + name, "切到下一项"))
+                .append(SP)
+                .append(Messages.suggestComponent("[加片]", "/cineplay add " + name + " ", "填入后粘链接")));
+        sender.sendMessage(Component.text("  ")
+                .append(Messages.suggestComponent("[音量]", "/cineplay volume " + name + " ", "0~100"))
+                .append(SP)
+                .append(Messages.suggestComponent("[范围]", "/cineplay range " + name + " ", "起播格数"))
+                .append(SP)
+                .append(Messages.suggestComponent("[权限]", "/cineplay access " + name + " ", "public / add"))
+                .append(SP)
+                .append(Messages.actionComponent("[删除]", "/cineplay remove " + name, "删除这块屏")));
+        sender.sendMessage(Component.text("  ")
+                .append(Messages.actionComponent("[◀ 返回]", "/cineplay menu", "回到屏幕列表")));
+        sender.sendMessage(rule());
+        return 1;
+    }
     private int help(CommandContext<CommandSourceStack> ctx) {
         final CommandSender sender = ctx.getSource().getSender();
         for (Component line : this.helpCache) sender.sendMessage(line);
