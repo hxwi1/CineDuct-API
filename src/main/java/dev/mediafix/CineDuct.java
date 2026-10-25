@@ -83,6 +83,7 @@ public final class CineDuct {
             BiliConfig.load();
             // 服务端控制通道（Paper 插件 → 客户端）：默认全关，见 docs/paper-control-payload.md
             dev.mediafix.net.CinePacketConfig.load();
+        dev.mediafix.client.GlobalVolume.load();
             // 账号权限（清晰度/音轨上限）：先按缓存走，后台查一次 nav；登录/退出时会重新查。
             // 设置界面重建时同步读缓存，所以这里预热一次能避免"刚进游戏那一页上限偏低"。
             dev.mediafix.bili.BiliEntitlements.refreshAsync();
@@ -263,7 +264,22 @@ public final class CineDuct {
                                                                 .getLong(ctx, "id"),
                                                         com.mojang.brigadier.arguments.FloatArgumentType
                                                                 .getFloat(ctx, "seconds"))))))
-                        .then(net.minecraft.commands.Commands.literal("volume")
+                        .then(net.minecraft.commands.Commands.literal("gvolume")
+                        .then(net.minecraft.commands.Commands.argument("percent",
+                                        com.mojang.brigadier.arguments.IntegerArgumentType.integer(0, 100))
+                                .executes(ctx -> {
+                                    final int percent = com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "percent");
+                                    final int applied = dev.mediafix.client.GlobalVolume.set(percent);
+                                    sendSuccess(ctx.getSource(), "[CineDuct] 全局音量（只影响你本机）→ " + applied + "%"
+                                            + "（已对正在播放的屏生效，新开的也会用）");
+                                    dev.mediafix.client.SlotPlayback.applyGlobalVolume();
+                                    return 1;
+                                }))
+                        .executes(ctx -> {
+                            sendSuccess(ctx.getSource(), "[CineDuct] 全局音量（只影响你本机）："
+                                    + dev.mediafix.client.GlobalVolume.percent() + "%");
+                            return 1;
+                        }))                .then(net.minecraft.commands.Commands.literal("volume")
                                 .then(net.minecraft.commands.Commands.argument("id",
                                                 com.mojang.brigadier.arguments.LongArgumentType.longArg(1L))
                                         .then(net.minecraft.commands.Commands.argument("percent",

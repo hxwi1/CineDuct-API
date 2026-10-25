@@ -94,7 +94,9 @@ public final class SlotPlayback {
         final SlotPlayback playback = SLOTS.computeIfAbsent(slot, SlotPlayback::new);
         if (volumePercent != null) {
             playback.volumePercent = volumePercent;
-            if (playback.player != null) playback.player.setVolumePercent(volumePercent);
+            if (playback.player != null) {
+                dev.mediafix.client.GlobalVolume.apply(playback.player, volumePercent);
+            }
         }
         final boolean urlChanged = url != null && !url.equals(playback.anchorUrl);
         playback.anchorUrl = url;
@@ -230,6 +232,15 @@ public final class SlotPlayback {
      *
      * @return true = 这条 op 已经由虚拟屏处理（调用方不要再走普通 slot 那条路）
      */
+    /** 全局音量变化后，把新值重新叠加到所有正在播的屏上（`/cineduct gvolume` 调它）。 */
+    public static synchronized void applyGlobalVolume() {
+        for (SlotPlayback playback : SLOTS.values()) {
+            if (playback.player != null) {
+                dev.mediafix.client.GlobalVolume.apply(playback.player, playback.volumePercent);
+            }
+        }
+    }
+
     public static synchronized boolean handleControl(String op, String slot, Boolean paused,
                                                      Long positionMs, Integer volume, Boolean muted) {
         final SlotPlayback playback = SLOTS.get(slot);
