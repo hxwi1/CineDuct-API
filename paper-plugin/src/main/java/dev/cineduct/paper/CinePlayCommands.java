@@ -45,7 +45,7 @@ final class CinePlayCommands {
 
     /** 没装模组 / 没开闸门时最常看到的提示。 */
     private static final SimpleCommandExceptionType NEED_PLAYER =
-            new SimpleCommandExceptionType(() -> "这条指令只能由玩家执行（控制台请用 /cineplay to <目标> ...）");
+            new SimpleCommandExceptionType(() -> "这条指令只能由玩家执行");
 
     private static final List<String> NO_ARG_OPS = List.of("pause", "resume", "stop", "rebuild", "list", "sync");
 
@@ -75,26 +75,18 @@ final class CinePlayCommands {
             root.then(node);
         }
 
-        // ---- 作用于选中的一批人（原版选择器）----
-        final RequiredArgumentBuilder<CommandSourceStack, PlayerSelectorArgumentResolver> targetsNode =
-                Commands.argument("targets", ArgumentTypes.players());
-        for (ArgumentBuilder<CommandSourceStack, ?> node : opNodes(true)) {
-            targetsNode.then(node);
-        }
-        root.then(Commands.literal("to")
-                .requires(src -> src.getSender().hasPermission("cineplay.others"))
-                .then(targetsNode));
+        /*
+         * 这里**没有** `to <目标>` 之类的"只给某个客户端放视频"的指令：
+         * 这个插件是服务端建虚拟屏，屏幕本身属于世界（谁走近谁看见），
+         * 不存在"指定某个人播放"这种东西 —— 那样会变成两套并存的模型，反而没人搞得清。
+         */
 
         root.then(Commands.literal("slot")
                 .executes(ctx -> showSlot(ctx))
                 .then(Commands.argument("name", StringArgumentType.word())
                         .executes(ctx -> setSlot(ctx, StringArgumentType.getString(ctx, "name")))));
 
-        root.then(Commands.literal("status")
-                .executes(ctx -> status(ctx, null))
-                .then(Commands.argument("target", ArgumentTypes.player())
-                        .requires(src -> src.getSender().hasPermission("cineplay.others"))
-                        .executes(ctx -> status(ctx, one(ctx)))));
+        root.then(Commands.literal("status").executes(ctx -> status(ctx, null)));
 
         root.then(Commands.literal("reload")
                 .requires(src -> src.getSender().hasPermission("cineplay.admin"))
