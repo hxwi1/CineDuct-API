@@ -462,6 +462,15 @@ final class CinePlayCommands {
             Messages.error(sender, "这块屏幕还没有播放列表");
             return 0;
         }
+        /*
+         * 最后一项上按"下一条"：应该**清空队列**（和自然播完一致），而不是取模绕回第 1 项。
+         * 绕回的行为让人误以为"它又从头放了一遍"，而且队列永远清不掉。
+         */
+        if (forward && screen.index >= screen.playlist.size() - 1 && !this.plugin.playlistLoop()) {
+            this.plugin.screens().finishAndClear(screen, "手动点下一条（已在最后一项）");
+            Messages.ok(sender, "已经是最后一项，播放列表已清空（需要重播请重新 /cineplay add）");
+            return 1;
+        }
         final String url = forward ? screen.nextUrl() : screen.prevUrl();
         screen.positionMs = 0L;
         this.plugin.screens().put(screen);
@@ -667,6 +676,9 @@ final class CinePlayCommands {
         return 1;
     }
 
+    private static final String PFX = "[CinePlay] ";
+    private static final Component SP = Component.text(" ");
+
     private static String mmss(long ms) {
         if (ms < 0) return "?";
         final long total = ms / 1000;
@@ -725,27 +737,38 @@ final class CinePlayCommands {
             final String pos = s.playlist.isEmpty() ? ""
                     : " " + mmss(s.currentPositionMs()) + (s.currentDurationSec() > 0
                             ? "/" + mmss(s.currentDurationSec() * 1000L) : "");
-            Messages.ok(sender, name + "  §7[" + state + pos + "]  "
-                    + (s.ownerName == null ? "" : "主人 " + s.ownerName + "  ")
-                    + "音量 " + s.volumePercent + "%  范围 " + s.enterRange + "/" + s.exitRange);
-
-            // 按钮行：能直接执行的用 action，需要参数的用 suggest
-            Messages.action(sender, "  [列表]", "/cineplay playlist " + name, "看这块屏的播放列表");
-            Messages.action(sender, "  [下一条]", "/cineplay next " + name, "切到下一项");
-            Messages.suggest(sender, "  [加片]", "/cineplay add " + name + " ", "点一下填进输入框，粘链接");
-            Messages.suggest(sender, "  [音量]", "/cineplay volume " + name + " ", "0~100");
-            Messages.suggest(sender, "  [范围]", "/cineplay range " + name + " ", "起播格数，如 32");
-            Messages.suggest(sender, "  [权限]", "/cineplay access " + name + " ", "public true / add <玩家>");
-            Messages.action(sender, "  [删除]", "/cineplay remove " + name, "删除这块屏（不可撤销）");
+            // 一块屏占两行：状态一行、按钮一行（按钮拼在同一个 Component 里，不要一个按钮一条消息）
+            sender.sendMessage(Component.text(PFX, NamedTextColor.AQUA)
+                    .append(Component.text(name, NamedTextColor.WHITE))
+                    .append(Component.text("  [" + state + pos + "]", NamedTextColor.GRAY))
+                    .append(Component.text((s.ownerName == null ? "" : "  " + s.ownerName)
+                            + "  音量 " + s.volumePercent + "%  范围 " + s.enterRange + "/" + s.exitRange,
+                            NamedTextColor.DARK_GRAY)));
+            sender.sendMessage(Component.text("   ")
+                    .append(Messages.actionComponent("[列表]", "/cineplay playlist " + name, "看播放列表"))
+                    .append(SP)
+                    .append(Messages.actionComponent("[下一条]", "/cineplay next " + name, "切到下一项"))
+                    .append(SP)
+                    .append(Messages.suggestComponent("[加片]", "/cineplay add " + name + " ", "填入指令后粘链接"))
+                    .append(SP)
+                    .append(Messages.suggestComponent("[音量]", "/cineplay volume " + name + " ", "0~100"))
+                    .append(SP)
+                    .append(Messages.suggestComponent("[范围]", "/cineplay range " + name + " ", "起播格数"))
+                    .append(SP)
+                    .append(Messages.suggestComponent("[权限]", "/cineplay access " + name + " ", "public/add"))
+                    .append(SP)
+                    .append(Messages.actionComponent("[删除]", "/cineplay remove " + name, "删除这块屏")));
         }
         if (hidden > 0) {
             Messages.note(sender, "还有 " + hidden + " 块屏（在 " + range + " 格外，或没对你开放权限）已隐藏");
             Messages.action(sender, "  [看全部屏幕]", "/cineplay screens", "不筛选，全列出来");
         }
-        Messages.ok(sender, "其他：");
-        Messages.action(sender, "[ 新建屏幕 ]", "/cineplay create", "木锄点两个对角开始建屏");
-        Messages.action(sender, "[ 刷新菜单 ]", "/cineplay menu", "重新加载状态");
-        Messages.action(sender, "[ 完整帮助 ]", "/cineplay help", "所有指令");
+        sender.sendMessage(Component.text(PFX, NamedTextColor.AQUA)
+                .append(Messages.actionComponent("[新建屏幕]", "/cineplay create", "木锄点两个对角开始建屏"))
+                .append(SP)
+                .append(Messages.actionComponent("[刷新菜单]", "/cineplay menu", "重新加载状态"))
+                .append(SP)
+                .append(Messages.actionComponent("[完整帮助]", "/cineplay help", "所有指令")));
         return 1;
     }
 

@@ -339,6 +339,25 @@ final class Screens {
         return true;
     }
 
+    /**
+     * 播放列表播完的收尾：清空队列 + 停播 + 标 finished。
+     *
+     * <p>必须和"定时推进"共用同一段逻辑：手动 {@code next} 在最后一项上按下去，
+     * 之前走的是取模绕回 → 最后一条从头再放一遍，队列还留着，永远清不掉。
+     */
+    synchronized void finishAndClear(Screen screen, String why) {
+        screen.playlist.clear();
+        screen.durations.clear();
+        screen.index = 0;
+        screen.positionMs = 0L;
+        screen.anchorWallMs = System.currentTimeMillis();
+        screen.paused = false;
+        screen.finished = true;
+        save();
+        this.plugin.broadcastClose(screen.name);
+        this.plugin.getLogger().info("播放列表已清空：" + screen.name + " " + why);
+    }
+
     /** 定时任务调（每 20 秒）：把"正在播"的屏固化成锚点并落盘。 */
     synchronized void autosave() {
         boolean any = false;
@@ -378,17 +397,7 @@ final class Screens {
                  *
                  * <p>客户端那边不用发指令：播放器自己到 EOF 就停了。
                  */
-                screen.playlist.clear();
-                screen.durations.clear();
-                screen.index = 0;
-                screen.positionMs = 0L;
-                screen.anchorWallMs = System.currentTimeMillis();
-                screen.paused = false;
-                screen.finished = true;
-                save();
-                this.plugin.broadcastClose(screen.name);
-                this.plugin.getLogger().info("播放列表已清空：" + screen.name + " 全部播完（最后一项 "
-                        + duration + "s）→ 需要重播请重新 /cineplay add");
+                finishAndClear(screen, "全部播完（最后一项 " + duration + "s）→ 需要重播请重新 /cineplay add");
                 continue;
             }
             screen.nextUrl();

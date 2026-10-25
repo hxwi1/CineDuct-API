@@ -47,20 +47,30 @@ final class Messages {
      * <p>命令值要带前导斜杠（原版约定），客户端会自己剥掉再发。
      */
     static void action(CommandSender to, String text, String command, String hover) {
-        to.sendMessage(Component.text("  ").append(Component.text(text, NamedTextColor.AQUA)
+        to.sendMessage(Component.text("  ").append(actionComponent(text, command, hover)));
+    }
+
+    /** 同上，但返回 Component —— 用来把多个按钮拼在**同一行**。 */
+    static Component actionComponent(String text, String command, String hover) {
+        return Component.text(text, NamedTextColor.AQUA)
                 .decoration(TextDecoration.UNDERLINED, true)
                 .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand(command))
                 .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
-                        Component.text(hover, NamedTextColor.GRAY)))));
+                        Component.text(hover, NamedTextColor.GRAY)));
     }
 
     /** 可点击的一行：点一下把命令**填进输入框**（不直接执行，适合还需要改参数的）。 */
     static void suggest(CommandSender to, String text, String command, String hover) {
-        to.sendMessage(Component.text("  ").append(Component.text(text, NamedTextColor.AQUA)
+        to.sendMessage(Component.text("  ").append(suggestComponent(text, command, hover)));
+    }
+
+    /** 同上，但返回 Component —— 用来把多个按钮拼在**同一行**。 */
+    static Component suggestComponent(String text, String command, String hover) {
+        return Component.text(text, NamedTextColor.AQUA)
                 .decoration(TextDecoration.UNDERLINED, true)
                 .clickEvent(net.kyori.adventure.text.event.ClickEvent.suggestCommand(command))
                 .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
-                        Component.text(hover, NamedTextColor.GRAY)))));
+                        Component.text(hover, NamedTextColor.GRAY)));
     }
 
     /** 指令帮助里的一行：命令用高亮，说明用灰色。 */
