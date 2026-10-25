@@ -101,12 +101,11 @@
 
 ## 客户端闸门
 
-客户端默认**全拒**，要在 `<游戏目录>/cineduct-packet.json` 里显式打开：
+客户端**默认对所有服务器生效**（不需要开关、也没有服务器白名单）。剩下的三道防线在
+`<游戏目录>/cineduct-packet.json`（可选文件，不存在就用默认值）：
 
 ```json
 {
-  "enabled": true,
-  "servers": ["mc.example.com:25565"],
   "token": "",
   "disabledOps": [],
   "allowedHosts": ["bilibili.com", "b23.tv", "hdslb.com"],
@@ -116,9 +115,7 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| `enabled` | 总开关。默认 `false` |
-| `servers` | 服务器地址白名单，**包含匹配**（写 `mc.example.com` 能匹配 `mc.example.com:25565`）。**留空 = 全拒** |
-| `token` | 与插件 `config.yml` 的 `token` 一致才放行；两边都空也算一致 |
+| `token` | 与插件 `config.yml` 的 `token` 一致才放行；两边都空 = 不校验 |
 | `disabledOps` | 禁用的 op 名，例如 `["seek"]` |
 | `allowedHosts` | 只允许播放这些域名的 URL（防"服务器让我客户端去拉内网地址"） |
 | `maxPerSecond` | 每秒最多接受多少条报文，超了丢弃并记日志 |

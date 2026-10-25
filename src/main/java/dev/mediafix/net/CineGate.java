@@ -10,7 +10,7 @@ import java.util.Locale;
 /**
  * 安全闸门（{@code docs/paper-control-payload.md} §5）。
  *
- * <p>顺序固定：{@code enabled} → 服务器白名单 → 令牌 → op 白名单 → URL 域名白名单 → 频率。
+ * <p>顺序固定：令牌 → op 白名单 → URL 域名白名单 → 频率。\n *\n * <p>★ 不再有 {@code enabled} 开关和服务器白名单：默认**对所有服务器生效**。\n * 剩下的三道（令牌/op/域名+频率）才是真正防滥用的部分，开关只是让人多踩一次坑。
  * **顺序不能换**：白名单之外的一切都不该消耗频率配额，也不该先解析 URL。
  *
  * <p>全部判定都是纯字符串/计数操作，跑在网络线程上也不阻塞。
@@ -45,14 +45,7 @@ public final class CineGate {
      * @param serverAddr 当前服务器地址（{@code ip} 或 {@code host:port}；单人游戏为 {@code singleplayer}）
      */
     public static synchronized Verdict check(CineControlPacket packet, String serverAddr) {
-        if (!CinePacketConfig.enabled) {
-            return Verdict.deny("通道未启用（cineduct-packet.json 里 enabled=false）");
-        }
-
-        if (!serverAllowed(serverAddr)) {
-            return Verdict.deny("服务器不在白名单: " + serverAddr);
-        }
-
+        /* 不再检查"服务器在不在白名单"：默认对所有服务器生效。 */
         final String want = CinePacketConfig.token;
         if (want != null && !want.isBlank()) {
             if (!want.equals(packet.token)) {
@@ -78,16 +71,6 @@ public final class CineGate {
         return rate(serverAddr);
     }
 
-    /** 白名单匹配：空 = 全拒；否则地址里包含任一项即可（这样 {@code mc.example.com} 能匹配带端口的地址）。 */
-    private static boolean serverAllowed(String serverAddr) {
-        if (CinePacketConfig.servers == null || CinePacketConfig.servers.isEmpty()) return false;
-        final String addr = serverAddr == null ? "" : serverAddr.toLowerCase(Locale.ROOT);
-        for (String s : CinePacketConfig.servers) {
-            if (s == null || s.isBlank()) continue;
-            if (addr.contains(s.trim().toLowerCase(Locale.ROOT))) return true;
-        }
-        return false;
-    }
 
     /** `open` 的 URL 只允许白名单 host（后缀匹配：`x.bilibili.com` 命中 `bilibili.com`）。 */
     private static Verdict checkUrl(String url) {
@@ -141,8 +124,7 @@ public final class CineGate {
 
     /** 一句话现状（`/cineduct packet status` 用）。 */
     public static String summary() {
-        if (!CinePacketConfig.enabled) return "关（cineduct-packet.json 的 enabled=false）";
-        return "开  白名单=" + CinePacketConfig.servers
+        return "对所有服务器生效（不再需要开关/服务器白名单）"
                 + "  令牌=" + (CinePacketConfig.token == null || CinePacketConfig.token.isBlank() ? "无" : "有")
                 + "  禁用op=" + CinePacketConfig.disabledOps
                 + "  域名=" + CinePacketConfig.allowedHosts

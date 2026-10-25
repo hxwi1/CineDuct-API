@@ -18,13 +18,13 @@ import java.util.List;
  * 服务端控制通道的配置（{@code cineduct-packet.json}，游戏目录根）。
  *
  * <p><b>默认全关</b>：一个客户端会连很多服务器，这条通道等于把"客户端播放"交给对方 ——
- * 所以 {@link #enabled} 默认 false，没手动打开之前**任何包都不接受**。
+ * <p>★ 早先有 {@code enabled} 总开关和服务器白名单，**已取消**：模组默认对所有服务器生效。\n * 保留的是真正防滥用的三道：{@code token}、{@code disabledOps}、{@code allowedHosts} + 频率限制。
  * 语义与闸门顺序见 {@code docs/paper-control-payload.md} §5。
  */
 public final class CinePacketConfig {
 
     /** 总开关。false 时所有包直接被拒（不解析、不记日志刷屏）。 */
-    public static boolean enabled = false;
+
 
     /**
      * 服务器白名单：留空 = 全拒。
@@ -33,7 +33,7 @@ public final class CinePacketConfig {
      * 所以写 {@code mc.example.com} 能匹配 {@code mc.example.com:25565}。
      * 单人游戏（集成服务器）的地址是 {@code singleplayer}。
      */
-    public static List<String> servers = new ArrayList<>();
+
 
     /** 共享令牌：非空时报文必须带同样的 {@code token}。给"公开服但只有自家插件能控"用。 */
     public static String token = "";
@@ -66,12 +66,6 @@ public final class CinePacketConfig {
                 final JsonElement root = GSON.fromJson(json, JsonElement.class);
                 if (root != null && root.isJsonObject()) {
                     final JsonObject o = root.getAsJsonObject();
-                    if (o.get("enabled") instanceof JsonElement e && e.isJsonPrimitive()) {
-                        enabled = e.getAsBoolean();
-                    }
-                    if (o.get("servers") instanceof JsonArray a) {
-                        servers = strings(a);
-                    }
                     if (o.get("token") instanceof JsonElement e && e.isJsonPrimitive()) {
                         token = e.getAsString();
                     }
@@ -87,7 +81,7 @@ public final class CinePacketConfig {
                 }
             }
         } catch (Exception e) {
-            CineDuct.LOGGER.warn("[CineDuct] 读取 cineduct-packet.json 失败（按默认全关处理）", e);
+            CineDuct.LOGGER.warn("[CineDuct] 读取 cineduct-packet.json 失败（按默认值处理）", e);
         }
         save();
     }
@@ -95,8 +89,6 @@ public final class CinePacketConfig {
     public static void save() {
         try {
             final JsonObject o = new JsonObject();
-            o.addProperty("enabled", enabled);
-            o.add("servers", toArray(servers));
             o.addProperty("token", token);
             o.add("disabledOps", toArray(disabledOps));
             o.add("allowedHosts", toArray(allowedHosts));
