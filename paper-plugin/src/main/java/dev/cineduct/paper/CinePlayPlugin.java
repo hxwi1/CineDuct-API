@@ -176,6 +176,11 @@ public final class CinePlayPlugin extends JavaPlugin {
         return Math.max(0, getConfig().getInt("premiumPreviewSeconds", 360));
     }
 
+    /** 菜单里"附近"的范围（格）：超出这个距离的屏只在拥有者视角下显示。 */
+    int menuRange() {
+        return Math.max(8, getConfig().getInt("menuRange", 64));
+    }
+
     /** 播完最后一项后是否回到开头继续循环（默认 false：清空队列，让"播完"这件事看得见）。 */
     boolean playlistLoop() {
         return getConfig().getBoolean("playlistLoop", false);

@@ -686,13 +686,35 @@ final class CinePlayCommands {
         final CommandSender sender = ctx.getSource().getSender();
         final List<String> names = this.plugin.screens().names();
 
-        Messages.ok(sender, "CinePlay 菜单（共 " + names.size() + " 块屏）");
+        /*
+         * 只列"跟我有关"的屏：我拥有/能管的，或者在我附近的。全服几十块屏时把所有屏
+         * 平铺出来根本没法看 —— 菜单是操作面板，不是数据库。
+         */
+        final Player self = sender instanceof Player p ? p : null;
+        final Location eye = self == null ? null : self.getLocation();
+        final int range = this.plugin.menuRange();
+        int shown = 0;
+        int hidden = 0;
+        Messages.ok(sender, "CinePlay 菜单（" + (eye == null ? names.size() + " 块屏"
+                : range + " 格内 + 你的屏") + "）");
         if (names.isEmpty()) {
             Messages.action(sender, "[ 新建屏幕 ]", "/cineplay create", "木锄点两个对角开始建屏");
             return 1;
         }
         for (String name : names) {
             final Screens.Screen s = this.plugin.screens().get(name);
+            // 能管 = 我的屏（含 OP）；否则只有"够得着"的才显示
+            final boolean mine = Screens.canManage(s, self) && s.ownerId != null
+                    && self != null && s.ownerId.equals(self.getUniqueId());
+            final boolean nearby = eye != null && !s.corners.isEmpty()
+                    && eye.getWorld() != null
+                    && eye.getWorld().equals(s.corners.getFirst().getWorld())
+                    && eye.distance(s.corners.getFirst()) <= range;
+            if (!mine && !nearby) {
+                hidden++;
+                continue;
+            }
+            shown++;
             final String state = s.finished ? "播完" : (s.playlist.isEmpty() ? "空" : (s.paused ? "暂停" : "播放中"));
             final String pos = s.playlist.isEmpty() ? ""
                     : " " + mmss(s.currentPositionMs()) + (s.currentDurationSec() > 0
@@ -709,6 +731,10 @@ final class CinePlayCommands {
             Messages.suggest(sender, "  [范围]", "/cineplay range " + name + " ", "起播格数，如 32");
             Messages.suggest(sender, "  [权限]", "/cineplay access " + name + " ", "public true / add <玩家>");
             Messages.action(sender, "  [删除]", "/cineplay remove " + name, "删除这块屏（不可撤销）");
+        }
+        if (hidden > 0) {
+            Messages.note(sender, "还有 " + hidden + " 块屏在 " + range + " 格之外、也不归你管（已隐藏）");
+            Messages.action(sender, "  [看全部屏幕]", "/cineplay screens", "不筛选，全列出来");
         }
         Messages.ok(sender, "其他：");
         Messages.action(sender, "[ 新建屏幕 ]", "/cineplay create", "木锄点两个对角开始建屏");

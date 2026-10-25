@@ -22,6 +22,10 @@ premiumPreviewSeconds: 360
 # true = 一直循环（适合展台/循环播放的场合）。
 playlistLoop: false
 
+# /cineplay menu 里"附近"的范围（格）。
+# 菜单只列「你拥有的屏」+「这个距离内的屏」，不然几十块屏全铺出来没法看。
+menuRange: 64
+
 # /cineplay play 的最小间隔（毫秒）：防止手滑连点把客户端刷成反复重开。
 # 0 = 不限制。
 playCooldownMs: 1500
