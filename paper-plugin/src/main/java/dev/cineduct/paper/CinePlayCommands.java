@@ -209,6 +209,17 @@ final class CinePlayCommands {
                         })
                         .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name")))));
 
+        root.then(Commands.literal("ask")
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .suggests(this::suggestScreens)
+                        .then(Commands.argument("what", StringArgumentType.word())
+                                .suggests((ctx, b) -> {
+                                    for (String k : new String[]{"url", "volume", "range", "access"}) b.suggest(k);
+                                    return b.buildFuture();
+                                })
+                                .executes(ctx -> ask(ctx, StringArgumentType.getString(ctx, "screen"),
+                                        StringArgumentType.getString(ctx, "what"))))));
+
         root.then(Commands.literal("paste")
                 .then(Commands.argument("screen", StringArgumentType.word())
                         .suggests(this::suggestScreens)
@@ -396,11 +407,69 @@ final class CinePlayCommands {
         final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null) { Messages.error(player, "找不到屏幕 " + name); return 0; }
         if (!ensureManage(player, screen)) return 0;
-        this.plugin.pasteWizard().arm(player, name);
+        this.plugin.pasteWizard().arm(player, name, PasteWizard.Kind.URL);
         Messages.ok(player, "粘贴模式：把链接直接发到聊天栏就行（" + this.plugin.pasteTimeoutSeconds()
                 + " 秒内有效，输入 cancel 取消）");
         Messages.note(player, "这条消息不会发出去，会被当作 屏幕 " + name + " 的播放源");
         return 1;
+    }
+
+    /** {@code /cineplay ask <屏幕> <url|volume|range|access>}：进入"下一条消息当作参数"模式。 */
+    private int ask(CommandContext<CommandSourceStack> ctx, String name, String what) throws CommandSyntaxException {
+        final Player player = self(ctx);
+        final Screens.Screen screen = this.plugin.screens().get(name);
+        if (screen == null) { Messages.error(player, "找不到屏幕 " + name); return 0; }
+        final PasteWizard.Kind kind = switch (what.toLowerCase(java.util.Locale.ROOT)) {
+            case "url" -> PasteWizard.Kind.URL;
+            case "volume" -> PasteWizard.Kind.VOLUME;
+            case "range" -> PasteWizard.Kind.RANGE;
+            case "access" -> PasteWizard.Kind.ACCESS;
+            default -> null;
+        };
+        if (kind == null) { Messages.error(player, "只支持 url / volume / range / access"); return 0; }
+        if (!ensureManage(player, screen)) return 0;
+        if (kind == PasteWizard.Kind.URL) {   // 加片走 paste（文案不同，逻辑一样）
+            return paste(ctx, name);
+        }
+        this.plugin.pasteWizard().arm(player, name, kind);
+        Messages.ok(player, switch (kind) {
+            case VOLUME -> "请在聊天栏输入音量（0~100）";
+            case RANGE -> "请在聊天栏输入起播距离（格数，如 32）";
+            case ACCESS -> "请在聊天栏输入要授权的玩家名";
+            default -> "请在聊天栏输入内容";
+        } + "（" + this.plugin.pasteTimeoutSeconds() + " 秒内有效，输入 cancel 取消）");
+        return 1;
+    }
+
+    /** 聊天栏填的内容落地（PasteWizard 解析校验后回调）。 */
+    void applyChatInput(Player player, String screenName, PasteWizard.Kind kind, String text) {
+        final Screens.Screen screen = this.plugin.screens().get(screenName);
+        if (screen == null) { Messages.error(player, "屏幕已经不在了：" + screenName); return; }
+        switch (kind) {
+            case URL -> addUrlFromChat(player, screenName, text);
+            case VOLUME -> {
+                screen.volumePercent = Math.clamp(Integer.parseInt(text), 0, 100);
+                this.plugin.screens().put(screen);
+                this.plugin.screens().broadcastAnchor(screen);
+                Messages.ok(player, "屏幕 " + screenName + " 音量 → " + screen.volumePercent + "%");
+            }
+            case RANGE -> {
+                final int enter = Integer.parseInt(text);
+                screen.enterRange = enter;
+                screen.exitRange = Math.max(enter + 16, (int) Math.round(enter * 1.33));
+                this.plugin.screens().put(screen);
+                this.plugin.screens().broadcastPlace(screen);
+                Messages.ok(player, "屏幕 " + screenName + " 可视范围：" + screen.enterRange + " 格内起播 / "
+                        + screen.exitRange + " 格外停止");
+            }
+            case ACCESS -> {
+                final Player target = Bukkit.getPlayerExact(text);
+                if (target == null) { Messages.error(player, "找不到在线玩家 " + text); return; }
+                screen.access.add(target.getUniqueId());
+                this.plugin.screens().put(screen);
+                Messages.ok(player, "已允许 " + target.getName() + " 管理屏幕 " + screenName);
+            }
+        }
     }
 
     /** 聊天里粘贴的链接（已由 PasteWizard 校验过像链接）。 */
@@ -819,11 +888,11 @@ final class CinePlayCommands {
                 .append(SP)
                 .append(Messages.actionComponent("[加片]", "/cineplay paste " + name, "点一下，然后在聊天栏粘链接")));
         sender.sendMessage(Component.text("  ")
-                .append(Messages.suggestComponent("[音量]", "/cineplay volume " + name + " ", "0~100"))
+                .append(Messages.actionComponent("[音量]", "/cineplay ask " + name + " volume", "点一下，然后在聊天栏输入 0~100"))
                 .append(SP)
-                .append(Messages.suggestComponent("[范围]", "/cineplay range " + name + " ", "起播格数"))
+                .append(Messages.actionComponent("[范围]", "/cineplay ask " + name + " range", "点一下，然后在聊天栏输入格数"))
                 .append(SP)
-                .append(Messages.suggestComponent("[权限]", "/cineplay access " + name + " ", "public / add"))
+                .append(Messages.actionComponent("[授权]", "/cineplay ask " + name + " access", "点一下，然后在聊天栏输入玩家名"))
                 .append(SP)
                 .append(Messages.actionComponent("[删除]", "/cineplay remove " + name, "删除这块屏")));
         sender.sendMessage(Component.text("  ")

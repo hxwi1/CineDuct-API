@@ -232,6 +232,11 @@ public final class CinePlayPlugin extends JavaPlugin {
         return this.pasteWizard;
     }
 
+    /** 聊天栏里填的内容走这里（由 PasteWizard 在主线程回调）。 */
+    void applyChatInput(Player player, String screen, int kindOrdinal, String text) {
+        this.commands.applyChatInput(player, screen, PasteWizard.Kind.values()[kindOrdinal], text);
+    }
+
     /** 菜单里点 [加片] 后，玩家粘贴的那条链接走这里（由 PasteWizard 在主线程回调）。 */
     void addFromChat(Player player, String screen, String url) {
         this.commands.addUrlFromChat(player, screen, url);
