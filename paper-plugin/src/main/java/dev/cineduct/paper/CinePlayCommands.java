@@ -209,6 +209,11 @@ final class CinePlayCommands {
                         })
                         .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name")))));
 
+        root.then(Commands.literal("paste")
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .suggests(this::suggestScreens)
+                        .executes(ctx -> paste(ctx, StringArgumentType.getString(ctx, "screen")))));
+
         root.then(Commands.literal("menu")
                 .executes(ctx -> menu(ctx))
                 .then(Commands.argument("screen", StringArgumentType.word())
@@ -385,9 +390,33 @@ final class CinePlayCommands {
     }
 
     /** {@code /cineplay add [屏幕名] <url>}：追加到某块屏幕的播放列表（空列表则立刻开始播）。 */
+    /** {@code /cineplay paste <屏幕>}：进入"下一条消息当作链接"的粘贴模式（菜单 [加片] 调的就是它）。 */
+    private int paste(CommandContext<CommandSourceStack> ctx, String name) throws CommandSyntaxException {
+        final Player player = self(ctx);
+        final Screens.Screen screen = this.plugin.screens().get(name);
+        if (screen == null) { Messages.error(player, "找不到屏幕 " + name); return 0; }
+        if (!ensureManage(player, screen)) return 0;
+        this.plugin.pasteWizard().arm(player, name);
+        Messages.ok(player, "粘贴模式：把链接直接发到聊天栏就行（" + this.plugin.pasteTimeoutSeconds()
+                + " 秒内有效，输入 cancel 取消）");
+        Messages.note(player, "这条消息不会发出去，会被当作 屏幕 " + name + " 的播放源");
+        return 1;
+    }
+
+    /** 聊天里粘贴的链接（已由 PasteWizard 校验过像链接）。 */
+    void addUrlFromChat(Player player, String screenName, String url) {
+        final int result = this.addUrl(player, screenName, url, 0);
+        if (result > 0) Messages.note(player, "（下一条消息回到普通聊天）");
+    }
+
+    /** {@code /cineplay add ...}：转给 {@link #addUrl}，指令与粘贴向导共用同一段逻辑。 */
     private int add(CommandContext<CommandSourceStack> ctx, String name, String url, int durationSec)
             throws CommandSyntaxException {
-        final CommandSender sender = ctx.getSource().getSender();
+        return addUrl(ctx.getSource().getSender(), name, url, durationSec);
+    }
+
+    /** 加一条的真实逻辑（权限校验也在这里，两条入口都走）。 */
+    int addUrl(CommandSender sender, String name, String url, int durationSec) {
         final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null) {
             Messages.error(sender, "找不到屏幕 " + name + "（/cineplay screens 看现有屏幕）");
@@ -788,7 +817,7 @@ final class CinePlayCommands {
                 .append(SP)
                 .append(Messages.actionComponent("[下一条]", "/cineplay next " + name, "切到下一项"))
                 .append(SP)
-                .append(Messages.suggestComponent("[加片]", "/cineplay add " + name + " ", "填入后粘链接")));
+                .append(Messages.actionComponent("[加片]", "/cineplay paste " + name, "点一下，然后在聊天栏粘链接")));
         sender.sendMessage(Component.text("  ")
                 .append(Messages.suggestComponent("[音量]", "/cineplay volume " + name + " ", "0~100"))
                 .append(SP)

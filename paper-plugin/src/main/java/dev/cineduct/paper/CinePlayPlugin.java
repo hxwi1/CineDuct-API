@@ -42,6 +42,7 @@ public final class CinePlayPlugin extends JavaPlugin {
     private DurationLookup durations;
     private Screens screens;
     private Selector selector;
+    private PasteWizard pasteWizard;
 
     @Override
     public void onEnable() {
@@ -54,6 +55,8 @@ public final class CinePlayPlugin extends JavaPlugin {
         this.screens.load();
         this.selector = new Selector(this);
         getServer().getPluginManager().registerEvents(this.selector, this);
+        this.pasteWizard = new PasteWizard(this);
+        getServer().getPluginManager().registerEvents(this.pasteWizard, this);
 
         this.commands = new CinePlayCommands(this);
         // Paper 插件的官方注册方式：/reload 之后会自动重新注册，不用手工处理
@@ -223,6 +226,24 @@ public final class CinePlayPlugin extends JavaPlugin {
 
     DurationLookup durations() {
         return this.durations;
+    }
+
+    PasteWizard pasteWizard() {
+        return this.pasteWizard;
+    }
+
+    /** 菜单里点 [加片] 后，玩家粘贴的那条链接走这里（由 PasteWizard 在主线程回调）。 */
+    void addFromChat(Player player, String screen, String url) {
+        this.commands.addUrlFromChat(player, screen, url);
+    }
+
+    /** 粘贴向导的有效期（秒）。 */
+    int pasteTimeoutSeconds() {
+        return Math.max(10, getConfig().getInt("pasteTimeoutSeconds", 60));
+    }
+
+    CinePlayCommands commands() {
+        return this.commands;
     }
 
     Screens screens() {
