@@ -209,6 +209,7 @@ final class CinePlayCommands {
                         })
                         .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name")))));
 
+        root.then(Commands.literal("menu").executes(ctx -> menu(ctx)));
         root.then(Commands.literal("help").executes(ctx -> help(ctx)));
 
         registrar.register(root.build(), "控制装了 CineDuct 模组的客户端播放", List.of("cp"));
@@ -670,6 +671,50 @@ final class CinePlayCommands {
         if (ms < 0) return "?";
         final long total = ms / 1000;
         return String.format(java.util.Locale.ROOT, "%02d:%02d", total / 60, total % 60);
+    }
+
+    /**
+     * {@code /cineplay menu}：聊天栏里的可点菜单。
+     *
+     * <p>每块屏一行状态 + 一排按钮：按钮全用 {@link Messages} 的点击文字，能直接跑的就跑
+     * （列表/下一条/删除/新建），需要补参数的就填进输入框（加片/音量/范围/授权）。
+     *
+     * <p>为什么用菜单而不是长帮助：这个插件的操作是"对着某块屏做一件事"，
+     * 菜单把"哪块屏 + 能做什么"放在同一行，比记 12 条指令现实得多。
+     */
+    private int menu(CommandContext<CommandSourceStack> ctx) {
+        final CommandSender sender = ctx.getSource().getSender();
+        final List<String> names = this.plugin.screens().names();
+
+        Messages.ok(sender, "CinePlay 菜单（共 " + names.size() + " 块屏）");
+        if (names.isEmpty()) {
+            Messages.action(sender, "[ 新建屏幕 ]", "/cineplay create", "木锄点两个对角开始建屏");
+            return 1;
+        }
+        for (String name : names) {
+            final Screens.Screen s = this.plugin.screens().get(name);
+            final String state = s.finished ? "播完" : (s.playlist.isEmpty() ? "空" : (s.paused ? "暂停" : "播放中"));
+            final String pos = s.playlist.isEmpty() ? ""
+                    : " " + mmss(s.currentPositionMs()) + (s.currentDurationSec() > 0
+                            ? "/" + mmss(s.currentDurationSec() * 1000L) : "");
+            Messages.ok(sender, name + "  §7[" + state + pos + "]  "
+                    + (s.ownerName == null ? "" : "主人 " + s.ownerName + "  ")
+                    + "音量 " + s.volumePercent + "%  范围 " + s.enterRange + "/" + s.exitRange);
+
+            // 按钮行：能直接执行的用 action，需要参数的用 suggest
+            Messages.action(sender, "  [列表]", "/cineplay playlist " + name, "看这块屏的播放列表");
+            Messages.action(sender, "  [下一条]", "/cineplay next " + name, "切到下一项");
+            Messages.suggest(sender, "  [加片]", "/cineplay add " + name + " ", "点一下填进输入框，粘链接");
+            Messages.suggest(sender, "  [音量]", "/cineplay volume " + name + " ", "0~100");
+            Messages.suggest(sender, "  [范围]", "/cineplay range " + name + " ", "起播格数，如 32");
+            Messages.suggest(sender, "  [权限]", "/cineplay access " + name + " ", "public true / add <玩家>");
+            Messages.action(sender, "  [删除]", "/cineplay remove " + name, "删除这块屏（不可撤销）");
+        }
+        Messages.ok(sender, "其他：");
+        Messages.action(sender, "[ 新建屏幕 ]", "/cineplay create", "木锄点两个对角开始建屏");
+        Messages.action(sender, "[ 刷新菜单 ]", "/cineplay menu", "重新加载状态");
+        Messages.action(sender, "[ 完整帮助 ]", "/cineplay help", "所有指令");
+        return 1;
     }
 
     private int help(CommandContext<CommandSourceStack> ctx) {
