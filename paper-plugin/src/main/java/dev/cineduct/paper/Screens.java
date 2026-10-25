@@ -52,6 +52,9 @@ final class Screens {
         String ownerName;
         /** 被逐项授权的人（可以管理这块屏，但不能再授权）。 */
         final java.util.Set<java.util.UUID> access = new java.util.LinkedHashSet<>();
+
+        /** 信任者：能操控播放（加片/切条/音量/范围），但**不能删**。 */
+        final java.util.Set<java.util.UUID> trusted = new java.util.LinkedHashSet<>();
         /** 是否对所有人开放管理。 */
         boolean publicAccess;
 
@@ -158,36 +161,65 @@ final class Screens {
         return new LinkedHashMap<>(this.screens);
     }
 
-    /** 能管理这块屏（改播放列表、删屏、调音量/范围、授权）：创建者本人 或 OP。 */
-    static boolean canManage(Screen screen, Player player) {
-        if (player == null) return true;                    // 控制台
-        if (player.isOp()) return true;
-        if (screen == null || screen.ownerId == null) return true;   // 没主人的老屏：不锁
-        return screen.ownerId.equals(player.getUniqueId());
-    }
-
-    /**
-     * 能**删除**这块屏：主人、被单独授权的人、OP。
+    /*
+     * 三档权限（由小到大）：
+     *   信任（trusted）  能操控播放：加片、切条、音量、范围。
+     *   管理员（access） 在信任之上还能**删除**这块屏、给别人授权。
+     *   主人（owner）    创建者，天然是管理员。
+     *   public = "信任所有人"：所有玩家都拿到信任级，但没人因此获得删除权。
+     *   OP 视同主人（排障用）。
      *
-     * <p>★ 故意不看 {@code publicAccess}：公开是"大家都能放片子"，不是"大家都能拆"。
-     * 拆掉一块屏是不可撤销的破坏性操作，公开授权只该给使用/管理权，不该给销毁权。
+     * 为什么这么分：删屏不可撤销，把它和"能放片子"绑在一起迟早出事；
+     * 而"公开"给的是**使用**权，不该顺带给销毁权。
      */
-    static boolean canDelete(Screen screen, Player player) {
+
+    /** 信任级及以上：能操控播放。 */
+    static boolean canPlay(Screen screen, Player player) {
         if (player == null) return true;                       // 控制台
         if (player.isOp()) return true;
         if (screen == null) return false;
-        if (screen.ownerId != null && screen.ownerId.equals(player.getUniqueId())) return true;
-        return screen.access.contains(player.getUniqueId());
+        if (screen.ownerId == null) return true;               // 没主人的老屏：不锁
+        if (screen.ownerId.equals(player.getUniqueId())) return true;
+        if (screen.access.contains(player.getUniqueId())) return true;
+        return screen.publicAccess || screen.trusted.contains(player.getUniqueId());
     }
 
-    /** 能用这块屏（管理权限 ∪ 被授权 ∪ 对所有人开放）。 */
-    static boolean canUse(Screen screen, Player player) {
-        if (canManage(screen, player)) return true;
+    /** 管理员级：能删屏、能授权。**不看 publicAccess**。 */
+    static boolean canAdmin(Screen screen, Player player) {
+        if (player == null) return true;
+        if (player.isOp()) return true;
         if (screen == null) return false;
-        if (screen.publicAccess) return true;
+        if (screen.ownerId == null) return true;
+        if (screen.ownerId.equals(player.getUniqueId())) return true;
         return screen.access.contains(player.getUniqueId());
     }
 
+    /** 删屏 = 管理员级（保留旧名字给删除逻辑用）。 */
+    static boolean canDelete(Screen screen, Player player) {
+        return canAdmin(screen, player);
+    }
+
+    /** 兼容旧调用：能管这块屏 = 能操控播放。 */
+    static boolean canManage(Screen screen, Player player) {
+        return canPlay(screen, player);
+    }
+
+    /** 能用这块屏 = 信任级及以上。 */
+    static boolean canUse(Screen screen, Player player) {
+        return canPlay(screen, player);
+    }
+
+    /** 这个人对这块屏的身份（菜单/提示显示用）。 */
+    static String roleOf(Screen screen, Player player) {
+        if (player == null) return "控制台";
+        if (player.isOp()) return "OP";
+        if (screen == null) return "无";
+        if (screen.ownerId != null && screen.ownerId.equals(player.getUniqueId())) return "主人";
+        if (screen.access.contains(player.getUniqueId())) return "管理员";
+        if (screen.trusted.contains(player.getUniqueId())) return "信任";
+        if (screen.publicAccess) return "公开";
+        return "无";
+    }
     private static Location vec(ConfigurationSection s, String key, World world) {
         final List<Double> list = new ArrayList<>(3);
         for (Object o : s.getList(key, List.of())) {
@@ -225,6 +257,13 @@ final class Screens {
             screen.ownerId = owner == null || owner.isBlank() ? null : java.util.UUID.fromString(owner);
             screen.ownerName = s.getString("ownerName");
             screen.publicAccess = s.getBoolean("publicAccess", false);
+            for (String id : s.getStringList("trusted")) {
+                try {
+                    screen.trusted.add(java.util.UUID.fromString(id));
+                } catch (IllegalArgumentException ignored) {
+                    // 坏 UUID 就跳过，不因为一条脏数据丢掉整块屏
+                }
+            }
             for (String id : s.getStringList("access")) {
                 try {
                     screen.access.add(java.util.UUID.fromString(id));
@@ -291,6 +330,7 @@ final class Screens {
             yaml.set(path + ".ownerId", screen.ownerId == null ? null : screen.ownerId.toString());
             yaml.set(path + ".ownerName", screen.ownerName);
             yaml.set(path + ".publicAccess", screen.publicAccess);
+            yaml.set(path + ".trusted", screen.trusted.stream().map(java.util.UUID::toString).toList());
             yaml.set(path + ".access", screen.access.stream().map(java.util.UUID::toString).toList());
             yaml.set(path + ".volumePercent", screen.volumePercent);
             yaml.set(path + ".enterRange", screen.enterRange);

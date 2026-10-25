@@ -171,12 +171,28 @@ final class CinePlayCommands {
                                 .then(Commands.argument("player", StringArgumentType.word())
                                         .executes(ctx -> accessChange(ctx,
                                                 StringArgumentType.getString(ctx, "screen"),
-                                                StringArgumentType.getString(ctx, "player"), true))))
+                                                StringArgumentType.getString(ctx, "player"), true, true))))
                         .then(Commands.literal("remove")
                                 .then(Commands.argument("player", StringArgumentType.word())
                                         .executes(ctx -> accessChange(ctx,
                                                 StringArgumentType.getString(ctx, "screen"),
-                                                StringArgumentType.getString(ctx, "player"), false))))
+                                                StringArgumentType.getString(ctx, "player"), false, true))))
+                        .then(Commands.literal("list").executes(ctx -> accessList(ctx,
+                                StringArgumentType.getString(ctx, "screen"))))));
+
+        root.then(Commands.literal("trust")
+                .then(Commands.argument("screen", StringArgumentType.word())
+                        .suggests(this::suggestScreens)
+                        .then(Commands.literal("add")
+                                .then(Commands.argument("player", StringArgumentType.word())
+                                        .executes(ctx -> accessChange(ctx,
+                                                StringArgumentType.getString(ctx, "screen"),
+                                                StringArgumentType.getString(ctx, "player"), true, false))))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("player", StringArgumentType.word())
+                                        .executes(ctx -> accessChange(ctx,
+                                                StringArgumentType.getString(ctx, "screen"),
+                                                StringArgumentType.getString(ctx, "player"), false, false))))
                         .then(Commands.literal("list").executes(ctx -> accessList(ctx,
                                 StringArgumentType.getString(ctx, "screen"))))));
 
@@ -212,7 +228,7 @@ final class CinePlayCommands {
                         .suggests(this::suggestScreens)
                         .then(Commands.argument("what", StringArgumentType.word())
                                 .suggests((ctx, b) -> {
-                                    for (String k : new String[]{"url", "volume", "range", "access"}) b.suggest(k);
+                                    for (String k : new String[]{"url", "volume", "range", "admin", "trust"}) b.suggest(k);
                                     return b.buildFuture();
                                 })
                                 .executes(ctx -> ask(ctx, StringArgumentType.getString(ctx, "screen"),
@@ -421,7 +437,8 @@ final class CinePlayCommands {
             case "url" -> PasteWizard.Kind.URL;
             case "volume" -> PasteWizard.Kind.VOLUME;
             case "range" -> PasteWizard.Kind.RANGE;
-            case "access" -> PasteWizard.Kind.ACCESS;
+            case "admin" -> PasteWizard.Kind.ADMIN;
+            case "trust" -> PasteWizard.Kind.TRUST;
             default -> null;
         };
         if (kind == null) { Messages.error(player, "只支持 url / volume / range / access"); return 0; }
@@ -433,7 +450,8 @@ final class CinePlayCommands {
         Messages.ok(player, switch (kind) {
             case VOLUME -> "请在聊天栏输入音量（0~100）";
             case RANGE -> "请在聊天栏输入起播距离（格数，如 32）";
-            case ACCESS -> "请在聊天栏输入要授权的玩家名";
+            case ADMIN -> "请在聊天栏输入要设为**管理员**的玩家名";
+            case TRUST -> "请在聊天栏输入要设为**信任者**的玩家名";
             default -> "请在聊天栏输入内容";
         } + "（" + this.plugin.pasteTimeoutSeconds() + " 秒内有效，输入 cancel 取消）");
         return 1;
@@ -460,12 +478,15 @@ final class CinePlayCommands {
                 Messages.ok(player, "屏幕 " + screenName + " 可视范围：" + screen.enterRange + " 格内起播 / "
                         + screen.exitRange + " 格外停止");
             }
-            case ACCESS -> {
+            case ADMIN, TRUST -> {
                 final Player target = Bukkit.getPlayerExact(text);
                 if (target == null) { Messages.error(player, "找不到在线玩家 " + text); return; }
-                screen.access.add(target.getUniqueId());
+                final boolean admin = kind == PasteWizard.Kind.ADMIN;
+                (admin ? screen.access : screen.trusted).add(target.getUniqueId());
                 this.plugin.screens().put(screen);
-                Messages.ok(player, "已允许 " + target.getName() + " 管理屏幕 " + screenName);
+                Messages.ok(player, admin
+                        ? "已把 " + target.getName() + " 设为 " + screenName + " 的管理员（能删、能授权）"
+                        : "已把 " + target.getName() + " 设为 " + screenName + " 的信任者（能操控播放，不能删）");
             }
         }
     }
@@ -579,12 +600,20 @@ final class CinePlayCommands {
         return 1;
     }
 
-    /** 管理权限校验：不是主人也不是 OP 就拒绝。 */
+    /** 操控播放的权限校验（信任级及以上）。 */
     private boolean ensureManage(CommandSender sender, Screens.Screen screen) {
         final Player player = sender instanceof Player p ? p : null;
-        if (Screens.canManage(screen, player)) return true;
-        Messages.error(sender, "这块屏归 " + (screen.ownerName == null ? "别人" : screen.ownerName)
-                + " 管，只有本人或 OP 能改");
+        if (Screens.canPlay(screen, player)) return true;
+        Messages.error(sender, "这块屏不归你管（主人 " + (screen.ownerName == null ? "未知" : screen.ownerName)
+                + "）。需要主人给信任或管理员权限");
+        return false;
+    }
+
+    /** 管理员级校验（删屏、授权用）：信任级不够。 */
+    private boolean ensureAdmin(CommandSender sender, Screens.Screen screen) {
+        final Player player = sender instanceof Player p ? p : null;
+        if (Screens.canAdmin(screen, player)) return true;
+        Messages.error(sender, "只有这块屏的主人 / 管理员（或 OP）能做这件事");
         return false;
     }
 
@@ -593,31 +622,35 @@ final class CinePlayCommands {
         final CommandSender sender = ctx.getSource().getSender();
         final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null) { Messages.error(sender, "找不到屏幕 " + name); return 0; }
-        if (!ensureManage(sender, screen)) return 0;
+        if (!ensureAdmin(sender, screen)) return 0;
         screen.publicAccess = value;
         this.plugin.screens().put(screen);
         Messages.ok(sender, value ? "屏幕 " + name + " 已对所有人开放管理" : "屏幕 " + name + " 只允许主人与授权者管理");
         return 1;
     }
 
-    /** {@code /cineplay access <屏幕> add|remove <玩家>}。 */
-    private int accessChange(CommandContext<CommandSourceStack> ctx, String name, String targetName, boolean add)
-            throws CommandSyntaxException {
+    /** {@code /cineplay access|trust <屏幕> add|remove <玩家>}：管理员（能删） / 信任（能操控）。 */
+    private int accessChange(CommandContext<CommandSourceStack> ctx, String name, String targetName,
+                             boolean add, boolean admin) throws CommandSyntaxException {
         final CommandSender sender = ctx.getSource().getSender();
         final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null) { Messages.error(sender, "找不到屏幕 " + name); return 0; }
-        if (!ensureManage(sender, screen)) return 0;
+        if (!ensureAdmin(sender, screen)) return 0;   // 只有管理员能给别人授权
         final Player target = Bukkit.getPlayerExact(targetName);
         if (target == null) {
             Messages.error(sender, "找不到在线玩家 " + targetName + "（授权对象需要在线一次）");
             return 0;
         }
+        final java.util.Set<java.util.UUID> set = admin ? screen.access : screen.trusted;
         if (add) {
-            screen.access.add(target.getUniqueId());
-            Messages.ok(sender, "已允许 " + target.getName() + " 管理屏幕 " + name);
+            set.add(target.getUniqueId());
+            Messages.ok(sender, admin
+                    ? "已把 " + target.getName() + " 设为屏幕 " + name + " 的**管理员**（能删、能授权）"
+                    : "已把 " + target.getName() + " 设为屏幕 " + name + " 的**信任者**（能操控播放，不能删）");
         } else {
-            screen.access.remove(target.getUniqueId());
-            Messages.ok(sender, "已收回 " + target.getName() + " 对屏幕 " + name + " 的管理权");
+            set.remove(target.getUniqueId());
+            Messages.ok(sender, (admin ? "已撤销 " + target.getName() + " 的管理员权限"
+                    : "已撤销 " + target.getName() + " 的信任权限"));
         }
         this.plugin.screens().put(screen);
         return 1;
@@ -627,20 +660,26 @@ final class CinePlayCommands {
         final CommandSender sender = ctx.getSource().getSender();
         final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null) { Messages.error(sender, "找不到屏幕 " + name); return 0; }
-        Messages.ok(sender, "屏幕 " + name + " 的主人：" + (screen.ownerName == null ? "（无）" : screen.ownerName)
-                + (screen.publicAccess ? "，已对所有人开放" : ""));
-        if (screen.access.isEmpty()) {
-            Messages.note(sender, "被授权的人：无（/cineplay access " + name + " add <玩家> 添加）");
-        } else {
-            Messages.note(sender, "被授权的人：" + screen.access.size() + " 个");
-            for (java.util.UUID id : screen.access) {
-                final String n = Bukkit.getOfflinePlayer(id).getName();
-                Messages.note(sender, "  - " + (n == null ? id.toString() : n));
-            }
-        }
+        Messages.ok(sender, "屏幕 " + name + "  主人 " + (screen.ownerName == null ? "（无）" : screen.ownerName)
+                + (screen.publicAccess ? "  【信任所有人】" : ""));
+        Messages.note(sender, "管理员（能删/能授权）：" + roster(screen.access));
+        Messages.note(sender, "信任者（能操控播放）：" + roster(screen.trusted));
+        Messages.note(sender, "改：/cineplay access " + name + " add <玩家>  → 管理员"
+                + "  ／  /cineplay trust " + name + " add <玩家>  → 信任");
         return 1;
     }
 
+    /** UUID 名单 → 逗号分隔的名字（离线也尽量给名字）。 */
+    private static String roster(java.util.Set<java.util.UUID> ids) {
+        if (ids.isEmpty()) return "无";
+        final StringBuilder sb = new StringBuilder();
+        for (java.util.UUID id : ids) {
+            if (sb.length() > 0) sb.append(", ");
+            final String n = Bukkit.getOfflinePlayer(id).getName();
+            sb.append(n == null ? id.toString().substring(0, 8) : n);
+        }
+        return sb.toString();
+    }
     private int setVolume(CommandContext<CommandSourceStack> ctx, String name, int percent)
             throws CommandSyntaxException {
         final CommandSender sender = ctx.getSource().getSender();
@@ -892,10 +931,11 @@ final class CinePlayCommands {
             return 0;
         }
         final String state = s.finished ? "播完" : (s.playlist.isEmpty() ? "空" : (s.paused ? "暂停" : "播放中"));
+        final String role = Screens.roleOf(s, self);
         sender.sendMessage(Component.text(" " + s.name, NamedTextColor.WHITE)
                 .append(Component.text("  [" + state + "]", NamedTextColor.GRAY))
                 .append(Component.text("  主人 " + (s.ownerName == null ? "无" : s.ownerName)
-                        + (s.publicAccess ? "（公开）" : ""), NamedTextColor.DARK_GRAY)));
+                        + (s.publicAccess ? "  【信任所有人】" : "") + "  你的身份：" + role, NamedTextColor.DARK_GRAY)));
         sender.sendMessage(Component.text("  音量 " + s.volumePercent + "%  范围 "
                 + s.enterRange + "/" + s.exitRange + " 格  第 "
                 + (s.playlist.isEmpty() ? 0 : s.index + 1) + "/" + s.playlist.size() + " 项",
@@ -912,7 +952,9 @@ final class CinePlayCommands {
                 .append(SP)
                 .append(Messages.actionComponent("[范围]", "/cineplay ask " + name + " range", "点一下，然后在聊天栏输入格数"))
                 .append(SP)
-                .append(Messages.actionComponent("[授权]", "/cineplay ask " + name + " access", "点一下，然后在聊天栏输入玩家名"))
+                .append(Messages.actionComponent("[管理员]", "/cineplay ask " + name + " admin", "给管理员（能删/能授权）"))
+                .append(SP)
+                .append(Messages.actionComponent("[信任]", "/cineplay ask " + name + " trust", "给信任（能操控播放，不能删）"))
                 .append(SP)
                 .append(Messages.actionComponent("[删除]", "/cineplay remove " + name, "先弹确认，不会一次点掉")));
         sender.sendMessage(Component.text("  ")

@@ -40,8 +40,10 @@ final class PasteWizard implements Listener {
         VOLUME,
         /** 起播距离（格）。 */
         RANGE,
-        /** 授权对象的名字。 */
-        ACCESS
+        /** 管理员（能删/能授权）。 */
+        ADMIN,
+        /** 信任者（能操控播放，不能删）。 */
+        TRUST
     }
 
     private static final Pattern URL_PATTERN = Pattern.compile("https?://\\S+", Pattern.CASE_INSENSITIVE);
@@ -107,7 +109,7 @@ final class PasteWizard implements Listener {
             case VOLUME -> NUMBER.matcher(text).matches() && Integer.parseInt(text) <= 100
                     ? null : "音量要填 0~100 的数字";
             case RANGE -> NUMBER.matcher(text).matches() ? null : "范围要填格数（数字）";
-            case ACCESS -> text.matches("[A-Za-z0-9_]{3,16}") ? null : "请填玩家名（3~16 位英文/数字/下划线）";
+            case ADMIN, TRUST -> text.matches("[A-Za-z0-9_]{3,16}") ? null : "请填玩家名（3~16 位英文/数字/下划线）";
         };
     }
 
