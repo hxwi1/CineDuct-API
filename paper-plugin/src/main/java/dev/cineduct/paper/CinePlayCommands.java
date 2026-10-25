@@ -710,7 +710,13 @@ final class CinePlayCommands {
                     && eye.getWorld() != null
                     && eye.getWorld().equals(s.corners.getFirst().getWorld())
                     && eye.distance(s.corners.getFirst()) <= range;
-            if (!mine && !nearby) {
+            /*
+             * 附近还不够 —— 还得"你有权限"：本人拥有、或这块屏对所有人开放、或你被单独授权。
+             * 否则任何人走近别人的屏都会看到它的按钮（虽然点了会被权限拦，但菜单本身就在泄露信息）。
+             * OP 例外：canUse 里 canManage 已经包含了 OP。
+             */
+            final boolean allowed = nearby && Screens.canUse(s, self);
+            if (!mine && !allowed) {
                 hidden++;
                 continue;
             }
@@ -733,7 +739,7 @@ final class CinePlayCommands {
             Messages.action(sender, "  [删除]", "/cineplay remove " + name, "删除这块屏（不可撤销）");
         }
         if (hidden > 0) {
-            Messages.note(sender, "还有 " + hidden + " 块屏在 " + range + " 格之外、也不归你管（已隐藏）");
+            Messages.note(sender, "还有 " + hidden + " 块屏（在 " + range + " 格外，或没对你开放权限）已隐藏");
             Messages.action(sender, "  [看全部屏幕]", "/cineplay screens", "不筛选，全列出来");
         }
         Messages.ok(sender, "其他：");
