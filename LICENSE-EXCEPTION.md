@@ -94,7 +94,32 @@ redistribute. If the permission is removed from the copy you received, then the
 plain `GPL-3.0-or-later` terms apply to that copy again, without the exception
 described here.
 
-### 2.5 No trademark or endorsement grant
+### 2.5 Unmodified binary redistribution (source-offer exemption)
+
+As an **additional permission** under section 7 of the GNU GPL version 3, the
+copyright holders grant you permission to **convey verbatim, unmodified copies
+of a CineDuct binary** (for example a released `.jar`, or a `.jar` you
+redownloaded from an official or third-party mirror) **without** satisfying the
+"Corresponding Source" obligations of GPLv3 section 6, provided that:
+
+1. the binary is conveyed **unmodified** — no patched classes, no re-signed
+   package with different contents, no stripped notices, no added or removed
+   files inside the archive; and
+2. this license notice, [`LICENSE`](LICENSE), [`LICENSE-EXCEPTION.md`](LICENSE-EXCEPTION.md)
+   and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) are kept available next
+   to the binary (a link to the upstream repository is sufficient), and
+3. you do not claim authorship of CineDuct or imply endorsement.
+
+This exemption covers **only unmodified binaries**. It does **not** cover a
+binary you built from modified sources, nor a bundle that contains CineDuct
+alongside other code in a way that changes what is being conveyed — those remain
+subject to the ordinary GPLv3 terms (source must be offered). Re-signing,
+repackaging (other than lossless re-archive), or modifying any file inside the
+archive counts as a **modification**, not as verbatim conveyance.
+
+Nothing in this section changes the rights a recipient already has under the
+GPL itself; it only adds an option for distributors of unmodified binaries.
+### 2.6 No trademark or endorsement grant
 
 This document grants no rights to the "CineDuct" name or logo beyond those
 needed for factual, descriptive references. It does not imply that the
@@ -126,6 +151,11 @@ The additional permission in this document does not modify those licenses.
   2. 把本模组**源码大量复制**进你自己的项目；
   3. 用非 GPL 条款**再分发本模组本体**；
   4. 把本模组的类**静态拷进**你自己的产物（而非运行期依赖）。
+- **未经修改的二进制产物可以豁免源码义务**：逐字节原样转发本项目的 `jar`（例如官方发布包或从镜像
+  重新下载的同一个包）时，**不需要**同时提供对应源码（GPLv3 第 6 节的 Corresponding Source 义务），
+  但必须保留 [`LICENSE`](LICENSE)、[`LICENSE-EXCEPTION.md`](LICENSE-EXCEPTION.md)、
+  [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)（放个上游仓库链接也算），并且不得声称自己是作者。
+  **重新签名、改包内容、加/删包内文件都算“修改”**，不再享受该豁免，回到正常 GPL 条款。
 - 按 GPLv3 第 7 节，下游再分发者**可以移除**这项附加许可；移除后该副本恢复为不含例外的 GPL 条款。
 - 本文档**不构成法律意见**。如用于商业分发，请自行咨询律师。
 

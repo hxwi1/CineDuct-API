@@ -51,6 +51,8 @@
 
 3. 游戏里核对通道：`/cineduct packet status`。
 
+> 线上协议（通道、字段、闸门）见 [`../docs/plugin-protocol.md`](../docs/plugin-protocol.md)。
+
 ## 建屏流程
 
 ```
