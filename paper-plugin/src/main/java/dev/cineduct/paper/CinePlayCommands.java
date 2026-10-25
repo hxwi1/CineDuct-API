@@ -201,13 +201,11 @@ final class CinePlayCommands {
         root.then(Commands.literal("screens").executes(ctx -> listScreens(ctx)));
 
         root.then(Commands.literal("remove")
-                .requires(src -> src.getSender().hasPermission("cineplay.admin"))
                 .then(Commands.argument("name", StringArgumentType.word())
-                        .suggests((ctx, builder) -> {
-                            for (String n : this.plugin.screens().names()) builder.suggest(n);
-                            return builder.buildFuture();
-                        })
-                        .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name")))));
+                        .suggests(this::suggestScreens)
+                        .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name"), false))
+                        .then(Commands.literal("confirm")
+                                .executes(ctx -> remove(ctx, StringArgumentType.getString(ctx, "name"), true)))));
 
         root.then(Commands.literal("ask")
                 .then(Commands.argument("screen", StringArgumentType.word())
@@ -689,20 +687,42 @@ final class CinePlayCommands {
         return 1;
     }
 
-    private int remove(CommandContext<CommandSourceStack> ctx, String name) throws CommandSyntaxException {
+    /**
+     * {@code /cineplay remove <屏幕> [confirm]}：删除屏幕（**两段确认**）。
+     *
+     * <p>第一次只提示并给一个 [确认删除] 按钮（15 秒内有效）；带 {@code confirm} 才真删。
+     * 破坏性操作不该一个误点就生效。
+     *
+     * <p>权限：主人 / 被单独授权的人 / OP。**公开（publicAccess）不算**——
+     * 公开是"大家都能放片子"，不是"大家都能拆"。
+     */
+    private int remove(CommandContext<CommandSourceStack> ctx, String name, boolean confirmed)
+            throws CommandSyntaxException {
         final CommandSender sender = ctx.getSource().getSender();
+        final Player player = sender instanceof Player p ? p : null;
         final Screens.Screen screen = this.plugin.screens().get(name);
         if (screen == null) {
             Messages.error(sender, "没有叫 " + name + " 的屏幕");
             return 0;
         }
+        if (!Screens.canDelete(screen, player)) {
+            Messages.error(sender, "这块屏是公开的，只有主人或被单独授权的人才能删除"
+                    + (screen.ownerName == null ? "" : "（主人 " + screen.ownerName + "）"));
+            return 0;
+        }
+        if (!confirmed) {
+            Messages.warn(sender, "要删除屏幕 " + name + "？这会同时清掉它的播放列表和几何，无法撤销。");
+            Messages.ok(sender, "15 秒内点下面的按钮确认：");
+            sender.sendMessage(Component.text("  ")
+                    .append(Messages.actionComponent("[ 确认删除 " + name + " ]",
+                            "/cineplay remove " + name + " confirm", "点了就真删")));
+            return 1;
+        }
         this.plugin.screens().remove(name);
-        // 让客户端把这块屏关掉（不发几何它就画不出来了，但播放器要显式关）
         this.plugin.broadcastClose(name);
-        Messages.ok(sender, "已删除屏幕 " + name);
+        Messages.ok(sender, "屏幕 " + name + " 已删除");
         return 1;
     }
-
     /** 当前操作的屏幕名：`/cineplay slot` 设过的那个，否则配置默认。 */
     private String targetScreenName(CommandSourceStack source) {
         if (source.getSender() instanceof Player player) return this.plugin.slotOf(player);
@@ -894,7 +914,7 @@ final class CinePlayCommands {
                 .append(SP)
                 .append(Messages.actionComponent("[授权]", "/cineplay ask " + name + " access", "点一下，然后在聊天栏输入玩家名"))
                 .append(SP)
-                .append(Messages.actionComponent("[删除]", "/cineplay remove " + name, "删除这块屏")));
+                .append(Messages.actionComponent("[删除]", "/cineplay remove " + name, "先弹确认，不会一次点掉")));
         sender.sendMessage(Component.text("  ")
                 .append(Messages.actionComponent("[◀ 返回]", "/cineplay menu", "回到屏幕列表")));
         sender.sendMessage(rule());

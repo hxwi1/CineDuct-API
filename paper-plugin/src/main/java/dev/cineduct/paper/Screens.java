@@ -166,6 +166,20 @@ final class Screens {
         return screen.ownerId.equals(player.getUniqueId());
     }
 
+    /**
+     * 能**删除**这块屏：主人、被单独授权的人、OP。
+     *
+     * <p>★ 故意不看 {@code publicAccess}：公开是"大家都能放片子"，不是"大家都能拆"。
+     * 拆掉一块屏是不可撤销的破坏性操作，公开授权只该给使用/管理权，不该给销毁权。
+     */
+    static boolean canDelete(Screen screen, Player player) {
+        if (player == null) return true;                       // 控制台
+        if (player.isOp()) return true;
+        if (screen == null) return false;
+        if (screen.ownerId != null && screen.ownerId.equals(player.getUniqueId())) return true;
+        return screen.access.contains(player.getUniqueId());
+    }
+
     /** 能用这块屏（管理权限 ∪ 被授权 ∪ 对所有人开放）。 */
     static boolean canUse(Screen screen, Player player) {
         if (canManage(screen, player)) return true;
