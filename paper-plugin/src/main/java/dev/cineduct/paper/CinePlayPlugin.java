@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 hxwi1
 package dev.cineduct.paper;
 
 import org.bukkit.entity.Player;

@@ -94,3 +94,26 @@
   现在验收看 `/cineplay status`（应有 slot 在 `PLAYING`、位置在走）与听声音。
 - `requireChannel` 默认 `false`：见 `config.yml` 里的说明。
 - 插件侧不做限流（客户端有 20 条/秒的闸门），但别在循环里调指令；`play` 自带 1.5 秒冷却。
+
+## 许可
+
+本插件以 **MIT** 发布（`LICENSE`），与仓库其余部分（CineDuct 模组，GPL-3.0-or-later）是互相独立的两个程序，
+详见 `NOTICE.md`。
+
+## 发布信息（Modrinth）
+
+| 字段 | 值 |
+| --- | --- |
+| 项目类型 | Plugin |
+| 支持的加载器 | Paper（Bukkit / Spigot 亦可，未专门测试） |
+| 游戏版本 | 1.21.1（`paper-api:1.21.1-R0.1-SNAPSHOT`） |
+| 环境 | **仅服务端**（client_side: unsupported，server_side: required） |
+| 许可 | MIT |
+| 依赖 | 无。装了 CineDuct 模组的客户端能看到屏幕，没装的客户端不受影响 |
+
+发布前自查：
+
+1. `.\gradlew.bat -p paper-plugin build` → `build/libs/cineplay-<版本>.jar`（不打包任何第三方依赖）；
+2. jar 里应只有 `dev/cineduct/paper/**`、`paper-plugin.yml`、`config.yml`；
+3. 在干净 Paper 1.21.1 上 `/cineplay help` 能出来，日志有 `CinePlay 已启用`；
+4. 源码链接指向包含本目录的仓库（若单独建仓，见 `../docs/DEV-WORKFLOW.md` 的 subtree 说明）。
