@@ -373,7 +373,8 @@ final class CinePlayCommands {
         }
         this.plugin.setSlot(player, name);   // 之后不带屏幕名的子指令默认就作用在它上面
         Messages.ok(sender, "屏幕 " + name + " 已创建：" + describe(corners));
-        Messages.note(sender, "接下来用 /cineplay add " + name + " <链接> 往播放列表里加片子");
+        Messages.suggest(sender, "/cineplay add " + name + " <链接>",
+                "/cineplay add " + name + " ", "点击填入指令，粘上链接就能播");
         this.plugin.screens().broadcastPlace(screen);
         return 1;
     }
@@ -444,7 +445,11 @@ final class CinePlayCommands {
             final String mark = i == Math.floorMod(screen.index, Math.max(1, screen.playlist.size())) ? " ▶ " : "   ";
             Messages.note(sender, mark + (i + 1) + ". " + shorten(screen.playlist.get(i)));
         }
-        if (screen.playlist.isEmpty()) Messages.note(sender, "（空）用 /cineplay add <链接> 添加");
+        if (screen.playlist.isEmpty()) {
+            Messages.note(sender, "（空）加一条试试：");
+            Messages.suggest(sender, "/cineplay add " + screen.name + " <链接>",
+                    "/cineplay add " + screen.name + " ", "点击填入指令，然后粘链接");
+        }
         return 1;
     }
 
@@ -564,8 +569,10 @@ final class CinePlayCommands {
         Messages.ok(sender, "共 " + names.size() + " 块屏幕");
         for (String name : names) {
             final Screens.Screen s = this.plugin.screens().get(name);
-            Messages.note(sender, name + "：播放列表 " + s.playlist.size() + " 项"
-                    + (s.corners.isEmpty() ? "（几何未设置）" : "，第 " + (s.index + 1) + " 项"));
+            Messages.action(sender, name, "/cineplay playlist " + name, "点击查看这块屏的播放列表");
+            Messages.note(sender, "  播放列表 " + s.playlist.size() + " 项"
+                    + (s.corners.isEmpty() ? "（几何未设置）" : "，第 " + (s.index + 1) + " 项")
+                    + (s.ownerName == null ? "" : "，主人 " + s.ownerName));
         }
         return 1;
     }
@@ -668,6 +675,10 @@ final class CinePlayCommands {
     private int help(CommandContext<CommandSourceStack> ctx) {
         final CommandSender sender = ctx.getSource().getSender();
         for (Component line : this.helpCache) sender.sendMessage(line);
+        Messages.ok(sender, "点下面的链接就能执行/填入：");
+        Messages.action(sender, "/cineplay screens", "/cineplay screens", "列出所有屏幕（点名字看播放列表）");
+        Messages.action(sender, "/cineplay create", "/cineplay create", "开始选区建一块新屏");
+        Messages.suggest(sender, "/cineplay add <屏幕> <链接>", "/cineplay add ", "点一下填进输入框，再粘链接");
         return 1;
     }
 
